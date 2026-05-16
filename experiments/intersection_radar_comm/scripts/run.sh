@@ -175,7 +175,7 @@ else
   fi
 fi
 
-"$PY_BIN" "$ROOT/experiments/intersection_radar_comm/scripts/summarize_runs.py" \
+"$PY_BIN" "$ROOT/experiments/intersection_radar_comm/tools/summarize_runs.py" \
   --runs-root "$OUT_ROOT" \
   --modes "${SUMMARY_MODES[@]}" \
   --out-dir "$OUT_ROOT/summary"

@@ -1481,7 +1481,37 @@ namespace ns3
             else
               {
                 libsumo::TraCIPosition egoPos = m_client->TraCIAPI::vehicle.getPosition (m_id);
-                libsumo::TraCIPosition objectPos = m_client->TraCIAPI::vehicle.getPosition (object.ID);
+                libsumo::TraCIPosition objectPos;
+                std::string objectLookupId = object.ID;
+                if (objectLookupId.rfind ("veh", 0) != 0 &&
+                    objectLookupId.find_first_not_of ("0123456789") == std::string::npos)
+                  {
+                    objectLookupId = "veh" + objectLookupId;
+                  }
+                try
+                  {
+                    objectPos = m_client->TraCIAPI::vehicle.getPosition (objectLookupId);
+                  }
+                catch (const std::exception &e)
+                  {
+                    if (objectLookupId == object.ID)
+                      {
+                        NS_LOG_WARN ("Sensor reaction object position lookup failed for '"
+                                     << object.ID << "': " << e.what ());
+                        continue;
+                      }
+                    try
+                      {
+                        objectPos = m_client->TraCIAPI::vehicle.getPosition (object.ID);
+                      }
+                    catch (const std::exception &fallbackError)
+                      {
+                        NS_LOG_WARN ("Sensor reaction object position lookup failed for '"
+                                     << objectLookupId << "' and '" << object.ID
+                                     << "': " << fallbackError.what ());
+                        continue;
+                      }
+                  }
                 relPosX = objectPos.x - egoPos.x;
                 relPosY = objectPos.y - egoPos.y;
               }

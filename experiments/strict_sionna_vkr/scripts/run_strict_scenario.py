@@ -16,6 +16,7 @@ from strict_common import (
     build_metrics_args,
     load_manifest,
     manifest_run_dir,
+    package_root,
     repo_root,
 )
 
@@ -25,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", required=True, help="Manifest JSON path")
     parser.add_argument("--out-root", default="analysis/strict_runs", help="Root output directory")
     parser.add_argument("--seed", type=int, help="Override both RNG run and SUMO seed")
+    parser.add_argument("--sumo-gui", type=int, choices=[0, 1], help="Override manifest SUMO GUI setting")
     parser.add_argument("--skip-native-metrics", action="store_true", help="Skip PHY sidecar run")
     parser.add_argument("--jobs", type=int, default=8, help="ns-3 build jobs for the sidecar")
     return parser.parse_args()
@@ -36,6 +38,8 @@ def main() -> int:
     if args.seed is not None:
         manifest["run"]["rng_run"] = args.seed
         manifest["run"]["sumo_seed"] = args.seed
+    if args.sumo_gui is not None:
+        manifest["run"]["sumo_gui"] = args.sumo_gui
 
     out_root = Path(args.out_root)
     if not out_root.is_absolute():
@@ -69,10 +73,10 @@ def main() -> int:
             "COLLISION_ACTION": str(manifest["run"]["collision_action"]),
             "COLLISION_CHECK_JUNCTIONS": str(manifest["run"]["collision_check_junctions"]),
             "EXPORT_RESULTS": str(manifest["run"]["export_results"]),
-            "PHY_ANALYSIS": str(manifest["run"]["phy_analysis"]),
+            "PHY_ANALYSIS": "0" if args.skip_native_metrics else str(manifest["run"]["phy_analysis"]),
         }
     )
-    scenario_runner = repo_root() / "scenarios" / "v2v-emergencyVehicleAlert-nrv2x" / "run.sh"
+    scenario_runner = repo_root() / "experiments" / "operational" / "v2v-emergencyVehicleAlert-nrv2x" / "run.sh"
     subprocess.run([str(scenario_runner)], check=True, env=behavior_env)
 
     if not args.skip_native_metrics:
@@ -86,10 +90,10 @@ def main() -> int:
                 "JOBS": str(args.jobs),
             }
         )
-        sidecar_runner = repo_root() / "strict_sionna_vkr" / "scripts" / "run_native_metrics.sh"
+        sidecar_runner = package_root() / "scripts" / "run_native_metrics.sh"
         subprocess.run([str(sidecar_runner)], check=True, env=metrics_env)
 
-    summarize_script = repo_root() / "strict_sionna_vkr" / "scripts" / "summarize_strict_runs.py"
+    summarize_script = package_root() / "scripts" / "summarize_strict_runs.py"
     subprocess.run(
         [sys.executable, str(summarize_script), "--run-dir", str(run_dir)],
         check=True,

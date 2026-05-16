@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from strict_common import ManagedSionnaServer, list_manifests_for_scenario, load_manifest, repo_root
+from strict_common import ManagedSionnaServer, list_manifests_for_scenario, load_manifest, package_root, repo_root
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-root", default="analysis/strict_runs", help="Root output directory")
     parser.add_argument("--seeds", default="11,12,13,14,15,16,17,18,19,20", help="Comma-separated seed list")
     parser.add_argument("--mode", help="Optional single mode basename without .json")
+    parser.add_argument("--sumo-gui", type=int, choices=[0, 1], help="Override manifest SUMO GUI setting")
     parser.add_argument("--skip-native-metrics", action="store_true", help="Skip PHY sidecar")
     parser.add_argument("--jobs", type=int, default=8, help="ns-3 build jobs")
     parser.add_argument(
@@ -37,7 +38,7 @@ def main() -> int:
             raise SystemExit(f"No manifest found for mode '{args.mode}' in scenario '{args.scenario}'")
 
     seeds = [int(item.strip()) for item in args.seeds.split(",") if item.strip()]
-    runner = repo_root() / "strict_sionna_vkr" / "scripts" / "run_strict_scenario.py"
+    runner = package_root() / "scripts" / "run_strict_scenario.py"
     scenario_root = Path(args.out_root)
     if not scenario_root.is_absolute():
         scenario_root = repo_root() / scenario_root
@@ -67,12 +68,14 @@ def main() -> int:
                 ]
                 if args.skip_native_metrics:
                     cmd.append("--skip-native-metrics")
+                if args.sumo_gui is not None:
+                    cmd.extend(["--sumo-gui", str(args.sumo_gui)])
                 subprocess.run(cmd, check=True)
         finally:
             if manager is not None:
                 manager.stop()
 
-    summarize_script = repo_root() / "strict_sionna_vkr" / "scripts" / "summarize_strict_runs.py"
+    summarize_script = package_root() / "scripts" / "summarize_strict_runs.py"
     subprocess.run(
         [sys.executable, str(summarize_script), "--runs-root", str(scenario_root / args.scenario)],
         check=True,

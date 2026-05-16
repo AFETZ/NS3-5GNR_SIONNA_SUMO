@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 NS3_DIR="${NS3_DIR:-}"
 OUT_DIR="${OUT_DIR:?OUT_DIR is required}"
 METRICS_ARGS="${METRICS_ARGS:?METRICS_ARGS is required}"

@@ -16,6 +16,7 @@ from strict_common import (
     build_metrics_args,
     load_manifest,
     normalize_cli_list_value_args,
+    package_root,
     repo_root,
 )
 
@@ -63,7 +64,7 @@ def main() -> int:
     calib_root = out_root / manifest["scenario_id"] / manifest["mode"]
     calib_root.mkdir(parents=True, exist_ok=True)
 
-    sidecar_runner = repo_root() / "strict_sionna_vkr" / "scripts" / "run_native_metrics.sh"
+    sidecar_runner = package_root() / "scripts" / "run_native_metrics.sh"
     summary_rows: list[dict[str, object]] = []
     manager = None
     if args.auto_sionna and bool(manifest["run"]["sionna_enabled"]):

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SCENE_FILE="${1:-${SCENE_FILE:-strict_sionna_vkr/sionna_scenes/strict_intersection/scene.xml}}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+SCENE_FILE="${1:-${SCENE_FILE:-experiments/strict_sionna_vkr/sionna_scenes/strict_intersection/scene.xml}}"
 SIONNA_VERBOSE="${SIONNA_VERBOSE:-1}"
 SIONNA_GPUS="${SIONNA_GPUS:-1}"
 SIONNA_MI_VARIANT="${SIONNA_MI_VARIANT:-llvm_ad_mono_polarized}"

@@ -27,8 +27,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     python = sys.executable
-    batch_runner = repo_root() / "strict_sionna_vkr" / "scripts" / "run_strict_batch.py"
-    calib_runner = repo_root() / "strict_sionna_vkr" / "scripts" / "run_radio_calibration.py"
+    batch_runner = package_root() / "scripts" / "run_strict_batch.py"
+    calib_runner = package_root() / "scripts" / "run_radio_calibration.py"
 
     calibration_manifests = [
         package_root() / "manifests" / "strict_lane_obstacle" / "good_link.json",

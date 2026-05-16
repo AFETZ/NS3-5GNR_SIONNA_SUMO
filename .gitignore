@@ -74,6 +74,8 @@
 /fcd.xml
 /simulation_log.txt
 /summary.csv
+/artifacts/
+/output/
 
 /src/antenna/          
 /src/dsdv/       

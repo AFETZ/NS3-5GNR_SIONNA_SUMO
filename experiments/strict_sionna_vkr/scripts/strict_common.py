@@ -16,7 +16,7 @@ from typing import Any
 
 
 def repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
 
 
 def package_root() -> Path:
@@ -155,6 +155,8 @@ def resolve_repo_path(path_like: str | Path) -> Path:
     path = Path(path_like)
     if path.is_absolute():
         return path
+    if path.parts and path.parts[0] == package_root().name:
+        return repo_root() / "experiments" / path
     return repo_root() / path
 
 
