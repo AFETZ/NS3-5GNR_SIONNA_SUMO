@@ -1,5 +1,11 @@
 # 1548-CAVISE2026\_5GNR
 
+![Portfolio](https://img.shields.io/badge/portfolio-thesis_research-2f6f6d?style=flat-square)
+![ns-3](https://img.shields.io/badge/simulator-ns--3-44546a?style=flat-square)
+![5G NR-V2X](https://img.shields.io/badge/network-5G_NR--V2X-3b6ea8?style=flat-square)
+![SUMO](https://img.shields.io/badge/mobility-SUMO-7a5c2e?style=flat-square)
+![Sionna](https://img.shields.io/badge/ray_tracing-Sionna_RT-2f6f6d?style=flat-square)
+
 ### Выпускная квалификационная работа
 
 > **«Влияние потерь сообщений 5G NR-V2X Mode 2 на безопасность подключённых автономных транспортных средств»**
