@@ -31,7 +31,9 @@ class FutureTransportFiguresTest(unittest.TestCase):
                       "sionna_no_path_fraction": .1 if arm.startswith("sionna") else "NA"} for arm in cal_arms] +
                     [{"kind": "behavior", "block": "block-01", "arm": arm, "collision": int(arm == "radar_only"),
                       "sionna_no_path_fraction": .1 if arm.startswith("sionna") else "NA"} for arm in behavior_arms])
-            collision = {arm: {"runs": 1, "rate": int(arm == "radar_only"), "wilson95": [0, 1]} for arm in behavior_arms}
+            collision = {arm: {"runs": 1, "rate": int(arm == "radar_only"),
+                               "wilson95": [.886, .9999999999999999] if arm == "radar_only" else [0, 1]}
+                         for arm in behavior_arms}
             (intersection / "runs.json").write_text(json.dumps(rows))
             (intersection / "summary.json").write_text(json.dumps({"collision": collision, "bootstrap": {
                 "calibration:cam_prr:native_good-native_bad": {"estimate": .1, "ci95": [0, .2]}}}))

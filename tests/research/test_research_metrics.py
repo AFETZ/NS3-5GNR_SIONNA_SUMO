@@ -42,6 +42,9 @@ class MetricsTest(unittest.TestCase):
         lo, hi = metrics.wilson(0, 30)
         self.assertAlmostEqual(lo, 0)
         self.assertAlmostEqual(hi, .113513, places=5)
+        lo, hi = metrics.wilson(30, 30)
+        self.assertAlmostEqual(lo, 1 - .113513, places=5)
+        self.assertEqual(hi, 1.0)
 
     def test_prr_deduplicates_deliveries_and_excludes_inferred_drops(self):
         tx = self.write("tx.csv", [dict(msg_type="CAM", tx_id="2", cam_gdt_ms="1000", tx_t_s="1")])

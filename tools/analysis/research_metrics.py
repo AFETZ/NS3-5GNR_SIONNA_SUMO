@@ -130,7 +130,9 @@ def wilson(successes, trials, z=1.959963984540054):
     denominator = 1 + z*z/trials
     center = (p + z*z/(2*trials)) / denominator
     half = z * math.sqrt(p*(1-p)/trials + z*z/(4*trials*trials)) / denominator
-    return max(0., center-half), min(1., center+half)
+    lower = 0. if successes == 0 else max(0., center-half)
+    upper = 1. if successes == trials else min(1., center+half)
+    return lower, upper
 
 
 def survival_quantile(observations, probability):

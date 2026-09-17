@@ -141,7 +141,7 @@ def figure_calibration(plt, rows, summary, out, labels=ARM_LABEL):
         if vals: ax.scatter(pos, sum(vals) / len(vals), marker="D", s=40, color=PALETTE[arm], zorder=4)
     ax.set(xticks=range(len(arms)), xticklabels=[labels.get(a, a) for a in arms], ylim=(0, 1.04),
            ylabel="CAM PRR in [2, 5) s")
-    ax.tick_params(axis="x", rotation=18); ax.text(.01, .97, "Paired complete seed blocks; diamonds are arm means", transform=ax.transAxes, va="top", fontsize=8)
+    ax.tick_params(axis="x", rotation=18)
     _save(fig, out, "figure_c_calibration_prr")
 
 
@@ -154,19 +154,25 @@ def figure_collisions(plt, summary, out, labels=ARM_LABEL):
         stat = collision[arm]; ci = stat.get("wilson95", [None, None])
         if not (_finite(stat.get("rate")) and isinstance(ci, list) and len(ci) == 2 and all(_finite(v) for v in ci)):
             raise ValueError(f"invalid Wilson CI for {arm}")
-        rate.append(stat["rate"]); lo.append(stat["rate"] - ci[0]); hi.append(ci[1] - stat["rate"]); ns.append(stat.get("runs"))
+        rate.append(stat["rate"])
+        lo.append(max(0.0, stat["rate"] - ci[0]))
+        hi.append(max(0.0, ci[1] - stat["rate"]))
+        ns.append(stat.get("runs"))
     fig, ax = plt.subplots(figsize=(7.0, 3.6)); xs = list(range(len(arms)))
     ax.bar(xs, rate, color=[PALETTE[a] for a in arms], width=.65, zorder=2)
     ax.errorbar(xs, rate, yerr=[lo, hi], fmt="none", color="#222222", capsize=3, zorder=3)
     for x, value, n in zip(xs, rate, ns): ax.text(x, min(1.02, value + .045), f"n={n}", ha="center", fontsize=8)
     ax.set(xticks=xs, xticklabels=[labels.get(a, a) for a in arms], ylim=(0, 1.08), ylabel="Collision proportion")
-    ax.tick_params(axis="x", rotation=18); ax.text(.01, .97, "Bars: observed proportion; whiskers: 95% Wilson CI", transform=ax.transAxes, va="top", fontsize=8)
+    ax.tick_params(axis="x", rotation=18)
     _save(fig, out, "figure_d_behavioral_collisions")
 
 
 def figure_sentinels(plt, rows, out):
     arms = ("sionna_good", "sionna_bad")
     kinds = [kind for kind in ("calibration", "behavior") if any(r.get("kind") == kind for r in rows)]
+    all_fractions = [float(r["sionna_no_path_fraction"]) for r in rows
+                     if r.get("arm") in arms and _finite(r.get("sionna_no_path_fraction"))]
+    upper = .5 if all_fractions and max(all_fractions) <= .5 else 1.04
     fig, axes = plt.subplots(1, max(1, len(kinds)), figsize=(5.6 * max(1, len(kinds)), 3.5), squeeze=False)
     for ax, kind in zip(axes[0], kinds):
         values = [[r["sionna_no_path_fraction"] for r in rows if r.get("kind") == kind and r.get("arm") == arm
@@ -175,7 +181,7 @@ def figure_sentinels(plt, rows, out):
             box = ax.boxplot(values, tick_labels=[ARM_LABEL[a] for a in arms], patch_artist=True, showfliers=True)
             for patch, arm in zip(box["boxes"], arms): patch.set_facecolor(PALETTE[arm]); patch.set_alpha(.65)
             for i, vals in enumerate(values, 1): ax.scatter([i] * len(vals), vals, color="#333333", s=15, alpha=.65, zorder=3)
-        ax.set(ylim=(0, 1.04), ylabel="Fraction of path-gain requests", title=kind.capitalize())
+        ax.set(ylim=(0, upper), ylabel="Fraction of path-gain requests", title=kind.capitalize())
         ax.tick_params(axis="x", rotation=18)
     fig.suptitle("Sionna no-ray sentinel (computational diagnostic)", fontsize=10)
     fig.text(.5, .02, "This is not a physical packet-loss measure.", ha="center", fontsize=8)
