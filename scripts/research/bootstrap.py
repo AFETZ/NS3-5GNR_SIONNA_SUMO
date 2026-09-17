@@ -47,10 +47,12 @@ RESEARCH_FILES = (
     "tests/research/test_collision_integrity.py",
     "tests/research/test_research_metrics.py",
     "experiments/future_transport_2026/PROTOCOL.md",
+    "experiments/future_transport_2026/ANALYSIS_AMENDMENTS.md",
     "experiments/future_transport_2026/generate_scene.py",
     "experiments/future_transport_2026/scene.xml",
     "experiments/future_transport_2026/scene.manifest.json",
     "experiments/future_transport_2026/run_campaign.py",
+    "experiments/future_transport_2026/run_urban_matrix.py",
 )
 
 

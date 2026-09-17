@@ -127,8 +127,13 @@ def _sionna_no_path(manifest, arm):
         no_path = int(counts.get("no_path", 0))
     except (TypeError, ValueError) as exc:
         raise ValueError("invalid Sionna audit in production manifest") from exc
-    if total <= 0 or no_path < 0:
+    if total <= 0 or no_path < 0 or not set(counts).issubset({"ok", "no_path"}) or int(counts.get("ok", 0)) <= 0:
         raise ValueError("invalid Sionna audit in production manifest")
+    if audit.get("path_gain_request_count") is not None and int(audit["path_gain_request_count"]) != total:
+        raise ValueError("Sionna path-gain request count differs from statuses")
+    reported_fraction = audit.get("no_ray_sentinel_fraction")
+    if reported_fraction is not None and abs(_finite(reported_fraction, "Sionna no-ray fraction") - no_path / total) > 1e-12:
+        raise ValueError("Sionna no-ray fraction differs from statuses")
     return no_path, (no_path / total if total else None), "sionna_no_path_sentinel_not_physical_loss"
 
 

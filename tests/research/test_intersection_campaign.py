@@ -71,6 +71,9 @@ class IntersectionCampaignTest(unittest.TestCase):
         no_path = campaign._sionna_no_path({"sionna_audit": {"path_gain_status_counts": {"ok": 8, "no_path": 2}}}, "sionna_bad")
         self.assertEqual(no_path, (2, .2, "sionna_no_path_sentinel_not_physical_loss"))
         self.assertEqual(campaign._sionna_no_path({}, "native_good"), ("NA", "NA", "not_applicable_native"))
+        with self.assertRaisesRegex(ValueError, "request count differs"):
+            campaign._sionna_no_path({"sionna_audit": {"path_gain_status_counts": {"ok": 8, "no_path": 2},
+                                                    "path_gain_request_count": 9}}, "sionna_good")
 
     def test_incomplete_default_block_is_rejected(self):
         runs_root = Path(self.tmp.name) / "runs"

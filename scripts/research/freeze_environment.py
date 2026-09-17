@@ -20,6 +20,7 @@ import tempfile
 EXAMPLE = Path("ns-3-dev/build/src/automotive/examples/ns3-dev-v2v-emergencyVehicleAlert-nrv2x-optimized")
 TRACI_LIBRARY = Path("ns-3-dev/build/lib/libns3-dev-traci-optimized.so")
 FIXED_FILES = (
+    Path("src/automotive/examples/CMakeLists.txt"),
     Path("src/traci/model/traci-client.cc"),
     Path("src/sionna/sionna_v1_server_script.py"),
     Path("tools/analysis/emergency_campaign.py"),

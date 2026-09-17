@@ -106,6 +106,34 @@ class MatchRaysTest(unittest.TestCase):
         self.assertEqual(self.server.get_delay("car_1", "car_2", state), 1e5)
         self.assertEqual(self.server.manage_los_request("CALC_REQUEST_LOS:veh1,veh2", state), [False])
 
+    def test_corrected_urban_geometry_anchors_mesh_to_road_and_node_to_antenna(self):
+        geometry = self.server.vehicle_geometry(grounded_vehicle_geometry=True)
+        state = dict(geometry)
+        node_position = [12.0, -4.0, 1.5]
+        np.testing.assert_allclose(
+            self.server.antenna_position_from_traci(node_position, state), [12.0, -4.0, 1.5])
+        mesh_position = self.server.mesh_position_from_traci(node_position, state)
+        self.assertIsInstance(mesh_position, list)
+        np.testing.assert_allclose(mesh_position, [12.0, -4.0, 0.65])
+
+        # The frozen PLY car is centred locally on z=0 and is 1.3 m high.
+        # Its corrected world extent is therefore the road-to-roof interval.
+        car_mesh = ROOT / "experiments/future_transport_2026/meshes/car_2.ply"
+        lines = car_mesh.read_text(encoding="ascii").splitlines()
+        header_end = lines.index("end_header")
+        count = int(next(line.split()[-1] for line in lines if line.startswith("element vertex ")))
+        local_z = [float(line.split()[2]) for line in lines[header_end + 1:header_end + 1 + count]]
+        self.assertEqual((min(local_z), max(local_z)), (-0.65, 0.65))
+        self.assertEqual(geometry["mesh_height_m"], max(local_z) - min(local_z))
+        self.assertEqual((0.65 + min(local_z), 0.65 + max(local_z)), (0.0, 1.3))
+
+    def test_legacy_geometry_remains_unchanged(self):
+        state = self.server.vehicle_geometry(grounded_vehicle_geometry=False)
+        np.testing.assert_allclose(
+            self.server.antenna_position_from_traci([0.0, 0.0, 1.5], state), [0.0, 0.0, 3.0])
+        np.testing.assert_allclose(
+            self.server.mesh_position_from_traci([0.0, 0.0, 1.5], state), [0.0, 0.0, 1.5])
+
 
 if __name__ == "__main__":
     unittest.main()

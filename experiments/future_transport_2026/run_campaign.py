@@ -68,7 +68,7 @@ def ready_udp(port):
     return False
 
 
-def command(arm, block, out, calibration=False):
+def command(arm, block, out, calibration=False, channel_scenario=None):
     cfg = ARMS[arm]
     prefix = out / "artifacts/eva"
     args = [
@@ -102,15 +102,24 @@ def command(arm, block, out, calibration=False):
         "--sumo-collision-stoptime-s=1000",
         f"--sumo-collision-output={out / 'artifacts/eva-collision.xml'}",
     ]
+    if channel_scenario is not None:
+        args.append(f"--v2v-channel-model={channel_scenario}")
     return [str(ROOT / "ns3"), "run", "--no-build", shlex.join(args)]
 
 
-def start_server(out, timeout=120):
-    log = (out / "sionna-server.log").open("w", encoding="utf-8")
-    env = dict(os.environ, SIONNA_MI_VARIANT="cuda_ad_mono_polarized", CUDA_VISIBLE_DEVICES="0")
+def server_command(channel_scenario=None):
     cmd = ["python3", str(SERVER), "--path-to-xml-scenario", str(SCENE),
            "--local-machine", "--gpu", "1", "--seed", "42", "--port", "8103",
            "--frequency", "5890000000", "--bw", "40000000", "--max-depth", "5"]
+    if channel_scenario == "V2V-Urban":
+        cmd.append("--grounded-vehicle-geometry")
+    return cmd
+
+
+def start_server(out, timeout=120, channel_scenario=None):
+    log = (out / "sionna-server.log").open("w", encoding="utf-8")
+    env = dict(os.environ, SIONNA_MI_VARIANT="cuda_ad_mono_polarized", CUDA_VISIBLE_DEVICES="0")
+    cmd = server_command(channel_scenario)
     process = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
     start = time.monotonic()
     while time.monotonic() - start < timeout:
@@ -139,7 +148,25 @@ def stop_server(process, log):
     log.close()
 
 
-def inspect_outputs(out, arm):
+def validate_channel_audit(simulator_log, channel_scenario):
+    marker = re.search(r"NR-SIDELINK-CHANNEL,model=([^,\s]+),buildings_registered=(\d+)(?:,bounds=([^\s]+))?", simulator_log)
+    if not marker:
+        raise ValueError("NR sidelink channel/building audit marker is absent")
+    model, building_count, bounds = marker.groups()
+    if model != channel_scenario or int(building_count) != 2 or not bounds:
+        raise ValueError(f"NR sidelink channel/building audit failed: {marker.group(0)}")
+    blocks = bounds.split(";")
+    if len(blocks) != 2 or any(len(block.split(":")) != 5 for block in blocks):
+        raise ValueError(f"NR sidelink building bounds are malformed: {bounds}")
+    scene = json.loads((ROOT / "experiments/future_transport_2026/scene.manifest.json").read_text())
+    expected_bounds = [":".join(f"{float(value):g}" for value in building[1:])
+                       for building in scene["buildings"]]
+    if blocks != expected_bounds:
+        raise ValueError(f"NR sidelink building bounds differ from scene manifest: {bounds}")
+    return {"model": model, "buildings_registered": int(building_count), "bounds": blocks}
+
+
+def inspect_outputs(out, arm, channel_scenario=None):
     artifacts = out / "artifacts"
     collision = artifacts / "eva-collision.xml"
     root = ET.parse(collision).getroot()
@@ -171,6 +198,7 @@ def inspect_outputs(out, arm):
     phy = re.search(r"NR-SIDELINK-PHY,channel_bandwidth_hz=(\d+),resource_blocks=(\d+)", simulator_log)
     if not band or not phy or int(band[1]) != 400 or abs(float(band[2]) - 40e6) > 1 or int(phy[1]) != 40_000_000 or int(phy[2]) != 53:
         raise ValueError("NR sidelink frequency-band/PHY bandwidth audit failed")
+    channel_audit = validate_channel_audit(simulator_log, channel_scenario) if channel_scenario else None
     noise_figures = {}
     for vehicle, equivalent_dbm, base_db, effective_db in re.findall(
         r"PER-VEHICLE-EQUIV-DBM-APPLIED,id=(veh[23]),equiv_tx_power_dbm=([\d.+-]+),"
@@ -190,6 +218,7 @@ def inspect_outputs(out, arm):
     if set(noise_figures) != {"veh2", "veh3"}:
         raise ValueError(f"Receiver noise-figure audit incomplete: {noise_figures}")
     sionna_audit = None
+    sionna_geometry_audit = None
     if ARMS[arm]["sionna"]:
         log_text = (out / "sionna-server.log").read_text(errors="replace")
         if any(marker in log_text for marker in ("Traceback (most recent call last)",
@@ -207,6 +236,15 @@ def inspect_outputs(out, arm):
                                             if token.startswith("valid_paths="))))
         if not gain_status.get("ok") or not valid_paths or gain_status.get("invalid"):
             raise ValueError(f"Unusable Sionna audit: gains={gain_status}, solves={len(valid_paths)}")
+        if channel_scenario == "V2V-Urban":
+            geometry = re.search(
+                r"SIONNA_GEOMETRY,antenna_z_m=([\d.]+),mesh_center_z_m=([\d.]+),mesh_height_m=([\d.]+)",
+                log_text,
+            )
+            if not geometry or tuple(map(float, geometry.groups())) != (1.5, 0.65, 1.3):
+                raise ValueError("Corrected Sionna antenna/vehicle geometry audit failed")
+            sionna_geometry_audit = {"antenna_z_m": 1.5, "mesh_center_z_m": 0.65,
+                                     "mesh_height_m": 1.3}
         sionna_audit = {"path_gain_status_counts": gain_status,
                         "path_gain_request_count": sum(gain_status.values()),
                         "no_ray_sentinel_fraction": gain_status.get("no_path", 0) / sum(gain_status.values()),
@@ -217,10 +255,11 @@ def inspect_outputs(out, arm):
                for path in required]
     return {"file_records": records, "collision_records_total": len(root.findall("collision")),
             "final_netstate_time_s": final_time, "noise_figure_audit": noise_figures,
-            "sionna_audit": sionna_audit}
+            "sionna_audit": sionna_audit, "sionna_geometry_audit": sionna_geometry_audit,
+            "channel_audit": channel_audit}
 
 
-def run_one(arm, block, destination, pilot, deadline, calibration=False):
+def run_one(arm, block, destination, pilot, deadline, calibration=False, channel_scenario=None):
     preflight(arm)
     if calibration and arm == "radar_only":
         raise ValueError("Radar-only has no CAM link to calibrate")
@@ -236,6 +275,9 @@ def run_one(arm, block, destination, pilot, deadline, calibration=False):
     manifest = {
         "schema": 1, "status": "started", "pilot_excluded": bool(pilot), "arm": arm, "block": block,
         "cohort": "radio_calibration" if calibration else "behavioral_intersection",
+        "channel_scenario": channel_scenario or "V2V-Highway",
+        "geometry_version": "grounded_vehicle_v2" if channel_scenario == "V2V-Urban" else "legacy_offset",
+        "scene_geometry": json.loads((ROOT / "experiments/future_transport_2026/scene.manifest.json").read_text()),
         "rng_seed": 1, "rng_run": block, "sumo_seed": block,
         "sensor_streams": {str(i): [100000+i*8+j for j in range(3)] for i in (2,3)},
         "sionna_seed": 42 if ARMS[arm]["sionna"] else None,
@@ -255,7 +297,7 @@ def run_one(arm, block, destination, pilot, deadline, calibration=False):
                       ROOT / "src/automotive/examples/v2v-emergencyVehicleAlert-nrv2x.cc",
                       *(ROOT / "experiments/future_transport_2026/meshes").glob("*.ply"))},
         "analysis_window_s": [2.,5.] if calibration else [0.,20.],
-        "command": command(arm,block,out,calibration),
+        "command": command(arm,block,out,calibration,channel_scenario),
     }
     path = out / "manifest.json"
     def write():path.write_text(json.dumps(manifest,indent=2,default=str)+"\n",encoding="utf-8")
@@ -264,7 +306,7 @@ def run_one(arm, block, destination, pilot, deadline, calibration=False):
     begin = time.monotonic()
     try:
         if ARMS[arm]["sionna"]:
-            server, log, server_command = start_server(out)
+            server, log, server_command = start_server(out, channel_scenario=channel_scenario)
             manifest["sionna_server_command"] = server_command
         with (out / "simulator.log").open("w", encoding="utf-8") as stream:
             result = subprocess.run(manifest["command"],cwd=ROOT,stdout=stream,stderr=subprocess.STDOUT,timeout=deadline)
@@ -273,7 +315,7 @@ def run_one(arm, block, destination, pilot, deadline, calibration=False):
             raise RuntimeError(f"ns-3 exit {result.returncode}")
         stop_server(server, log)
         server = log = None
-        manifest.update(inspect_outputs(out,arm))
+        manifest.update(inspect_outputs(out,arm,channel_scenario))
         manifest["status"] = "completed_pending_metric_audit"
     except Exception as exc:
         manifest["status"] = "failed"
@@ -293,6 +335,7 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("/research/runs"))
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--calibration", action="store_true")
+    parser.add_argument("--channel-scenario", choices=("V2V-Highway", "V2V-Urban"))
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -301,9 +344,9 @@ def main():
     if args.calibration and args.arm == "radar_only":
         parser.error("Radar-only has no CAM link to calibrate")
     if args.dry_run:
-        print(shlex.join(command(args.arm,args.block,args.out,args.calibration)))
+        print(shlex.join(command(args.arm,args.block,args.out,args.calibration,args.channel_scenario)))
     else:
-        print(run_one(args.arm,args.block,args.out,args.pilot,args.timeout,args.calibration))
+        print(run_one(args.arm,args.block,args.out,args.pilot,args.timeout,args.calibration,args.channel_scenario))
 
 
 if __name__ == "__main__":

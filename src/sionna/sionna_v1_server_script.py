@@ -14,6 +14,41 @@ NO_PATH_DELAY_S = 1e5
 NO_PATH_LOS = False
 
 
+def vehicle_geometry(grounded_vehicle_geometry=False):
+    """Return the coordinate convention used for moving vehicle meshes.
+
+    TraCI reports the radio-node height.  The legacy convention treated that
+    value as the mesh centre and lifted antennas by 1.5 m.  The opt-in urban
+    convention instead keeps the node at the reported 1.5 m height and places
+    the 1.3 m high vehicle mesh on the road.
+    """
+    if grounded_vehicle_geometry:
+        return {
+            "antenna_displacement": [0.0, 0.0, 0.0],
+            "mesh_displacement": [0.0, 0.0, -0.85],
+            "mesh_height_m": 1.3,
+        }
+    return {
+        "antenna_displacement": [0.0, 0.0, 1.5],
+        "mesh_displacement": [0.0, 0.0, 0.0],
+        "mesh_height_m": 1.3,
+    }
+
+
+def mesh_position_from_traci(position, sionna_structure):
+    """Map a TraCI radio-node position to the dynamic mesh centre."""
+    # SceneObject.position accepts a Python xyz sequence; a NumPy array is
+    # interpreted as a DrJit array with incompatible nested dimensions here.
+    return (np.asarray(position, dtype=float) + np.asarray(
+        sionna_structure["mesh_displacement"], dtype=float)).tolist()
+
+
+def antenna_position_from_traci(position, sionna_structure):
+    """Map a TraCI radio-node position to a Sionna antenna location."""
+    return np.asarray(position, dtype=float) + np.asarray(
+        sionna_structure["antenna_displacement"], dtype=float)
+
+
 def _requested_gpu_count():
     """Read --gpu before TensorFlow initializes CUDA devices."""
     for index, argument in enumerate(sys.argv[1:]):
@@ -123,7 +158,8 @@ def manage_location_message(message, sionna_structure):
             
                 new_orientation = ((360 - new_angle) % 360 + 90)*np.pi/180
 
-                from_sionna.position = [new_x, new_y, new_z]
+                from_sionna.position = mesh_position_from_traci(
+                    [new_x, new_y, new_z], sionna_structure)
                 from_sionna.orientation = [new_orientation, 0, 0]
                 from_sionna.velocity = [new_v_x, new_v_y, new_v_z]
                 
@@ -238,8 +274,8 @@ def compute_rays(sionna_structure):
         car_position = np.array(
             [sionna_structure["sionna_location_db"][car_id]['x'], sionna_structure["sionna_location_db"][car_id]['y'],
              sionna_structure["sionna_location_db"][car_id]['z']])
-        tx_position = car_position + np.array(sionna_structure["antenna_displacement"])
-        rx_position = car_position + np.array(sionna_structure["antenna_displacement"])
+        tx_position = antenna_position_from_traci(car_position, sionna_structure)
+        rx_position = antenna_position_from_traci(car_position, sionna_structure)
 
         if sionna_structure["scene"].get(tx_antenna_name) is None:
             sionna_structure["scene"].add(Transmitter(tx_antenna_name, position=tx_position, orientation=[0, 0, 0]))
@@ -512,6 +548,8 @@ def main():
     parser.add_argument('--time-checker', action='store_true', help='[DEBUG] Flag to check time taken for each operation')
     parser.add_argument('--gpu', type=int, help='Number of GPUs, set 0 to use CPU only (refer to TensorFlow and Sionna documentation)', default=2)
     parser.add_argument('--dynamic-objects-name', type=str, help='Name of the dynamic objects; in the Scenario they must be called e.g., car_id, with id=SUMO ID (only number)', default="car")
+    parser.add_argument('--grounded-vehicle-geometry', action='store_true',
+                        help='Use TraCI z as antenna height and place the 1.3 m vehicle mesh on the road; legacy geometry remains the default')
 
     args = parser.parse_args()
     # Scenario
@@ -538,6 +576,7 @@ def main():
     time_checker = args.time_checker
     gpus = args.gpu
     dynamic_objects_name = args.dynamic_objects_name
+    grounded_vehicle_geometry = args.grounded_vehicle_geometry
 
     kill_process_using_port(port, verbose)
     configure_gpu(verbose, gpus)
@@ -555,7 +594,7 @@ def main():
     # Edit here the settings for the antennas
     element_spacing = 2.5
     sionna_structure["planar_array"] = PlanarArray(num_rows=1, num_cols=1, vertical_spacing=element_spacing, horizontal_spacing=element_spacing, pattern="iso", polarization="V")
-    sionna_structure["antenna_displacement"] = [0, 0, 1.5] # Antenna position wrt car position. Edit needed if each car uses a different mesh
+    sionna_structure.update(vehicle_geometry(grounded_vehicle_geometry))
     
     # Scenario update frequency settings
     sionna_structure["position_threshold"] = position_threshold
@@ -577,6 +616,11 @@ def main():
     sionna_structure["path_loss_cache"] = {}
     sionna_structure["delay_cache"] = {}
     sionna_structure["last_path_loss_requested"] = None
+
+    if grounded_vehicle_geometry:
+        print("SIONNA_GEOMETRY,antenna_z_m=1.5,mesh_center_z_m=0.65,mesh_height_m=1.3", flush=True)
+    else:
+        print("SIONNA_GEOMETRY,mode=legacy,antenna_z_m=3.0,mesh_center_z_m=1.5,mesh_height_m=1.3", flush=True)
 
     # Set up UDP socket
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

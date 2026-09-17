@@ -40,7 +40,7 @@ def _finite(value):
 def _save(fig, out: Path, stem: str) -> None:
     fig.tight_layout()
     fig.savefig(out / f"{stem}.svg", bbox_inches="tight")
-    fig.savefig(out / f"{stem}.png", dpi=300, bbox_inches="tight")
+    fig.savefig(out / f"{stem}.png", dpi=600, bbox_inches="tight")
     fig.clear()
 
 
@@ -121,7 +121,7 @@ def _ordered(rows, kind):
     return [arm for arm in ARM_ORDER if arm in present]
 
 
-def figure_calibration(plt, rows, summary, out):
+def figure_calibration(plt, rows, summary, out, labels=ARM_LABEL):
     arms = _ordered(rows, "calibration")
     if not arms:
         raise ValueError("intersection output has no calibration rows")
@@ -137,13 +137,13 @@ def figure_calibration(plt, rows, summary, out):
     for arm, pos in positions.items():
         vals = [v[arm] for v in by_block.values() if arm in v]
         if vals: ax.scatter(pos, sum(vals) / len(vals), marker="D", s=40, color=PALETTE[arm], zorder=4)
-    ax.set(xticks=range(len(arms)), xticklabels=[ARM_LABEL.get(a, a) for a in arms], ylim=(0, 1.04),
+    ax.set(xticks=range(len(arms)), xticklabels=[labels.get(a, a) for a in arms], ylim=(0, 1.04),
            ylabel="CAM PRR in [2, 5) s")
     ax.tick_params(axis="x", rotation=18); ax.text(.01, .97, "Paired complete seed blocks; diamonds are arm means", transform=ax.transAxes, va="top", fontsize=8)
     _save(fig, out, "figure_c_calibration_prr")
 
 
-def figure_collisions(plt, summary, out):
+def figure_collisions(plt, summary, out, labels=ARM_LABEL):
     collision = summary.get("collision", {})
     arms = [a for a in ARM_ORDER if a in collision]
     if not arms: raise ValueError("intersection summary has no behavioral collision statistics")
@@ -157,7 +157,7 @@ def figure_collisions(plt, summary, out):
     ax.bar(xs, rate, color=[PALETTE[a] for a in arms], width=.65, zorder=2)
     ax.errorbar(xs, rate, yerr=[lo, hi], fmt="none", color="#222222", capsize=3, zorder=3)
     for x, value, n in zip(xs, rate, ns): ax.text(x, min(1.02, value + .045), f"n={n}", ha="center", fontsize=8)
-    ax.set(xticks=xs, xticklabels=[ARM_LABEL.get(a, a) for a in arms], ylim=(0, 1.08), ylabel="Collision proportion")
+    ax.set(xticks=xs, xticklabels=[labels.get(a, a) for a in arms], ylim=(0, 1.08), ylabel="Collision proportion")
     ax.tick_params(axis="x", rotation=18); ax.text(.01, .97, "Bars: observed proportion; whiskers: 95% Wilson CI", transform=ax.transAxes, va="top", fontsize=8)
     _save(fig, out, "figure_d_behavioral_collisions")
 
@@ -180,17 +180,22 @@ def figure_sentinels(plt, rows, out):
     _save(fig, out, "figure_e_sionna_no_ray_sentinel")
 
 
-def generate(emergency_dir: Path, intersection_dir: Path, out: Path) -> None:
+def generate(emergency_dir: Path, intersection_dir: Path, out: Path, native_model: str = "unspecified") -> None:
     if out.exists() and any(out.iterdir()):
         raise FileExistsError(f"refusing to overwrite a non-empty output directory: {out}")
     emergency_rows, emergency_summary = _load(emergency_dir)
     intersection_rows, intersection_summary = _load(intersection_dir)
     out.mkdir(parents=True, exist_ok=True)
     plt = _style()
+    labels = dict(ARM_LABEL)
+    if native_model in ("urban", "highway"):
+        label = native_model.capitalize()
+        labels["native_good"] = f"{label} native, base NF"
+        labels["native_bad"] = f"{label} native, +53 dB NF"
     figure_emergency_prr(plt, emergency_rows, emergency_summary, out)
     figure_emergency_km(plt, emergency_summary, out)
-    figure_calibration(plt, intersection_rows, intersection_summary, out)
-    figure_collisions(plt, intersection_summary, out)
+    figure_calibration(plt, intersection_rows, intersection_summary, out, labels)
+    figure_collisions(plt, intersection_summary, out, labels)
     figure_sentinels(plt, intersection_rows, out)
 
 
@@ -199,8 +204,9 @@ def main() -> None:
     parser.add_argument("--emergency-dir", type=Path, required=True)
     parser.add_argument("--intersection-dir", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--native-model", choices=("unspecified", "urban", "highway"), default="unspecified")
     args = parser.parse_args()
-    generate(args.emergency_dir.resolve(), args.intersection_dir.resolve(), args.out.resolve())
+    generate(args.emergency_dir.resolve(), args.intersection_dir.resolve(), args.out.resolve(), args.native_model)
 
 
 if __name__ == "__main__":

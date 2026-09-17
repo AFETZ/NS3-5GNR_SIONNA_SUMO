@@ -80,6 +80,7 @@ build_lib_example(
     LIBRARIES_TO_LINK
     ${libcarla}
     ${libautomotive}
+    ${libbuildings}
     ${libnr}
     ${libstats}
     ${libtraci}

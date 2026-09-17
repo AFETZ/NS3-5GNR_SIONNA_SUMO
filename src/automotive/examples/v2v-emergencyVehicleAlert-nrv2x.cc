@@ -28,6 +28,7 @@
 #include "ns3/applications-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/point-to-point-module.h"
+#include "ns3/buildings-module.h"
 #include "ns3/nr-module.h"
 #include "ns3/lte-module.h"
 #include "ns3/stats-module.h"
@@ -264,6 +265,9 @@ main (int argc, char *argv[])
   std::string simTag = "default";
   std::string outputDir = "./";
   bool vehicle_vis = false;
+  // Preserve the historical highway default.  The urban setting is intended
+  // for the synthetic two-block intersection disclosed in the research setup.
+  std::string v2v_channel_model = "V2V-Highway";
 
   int numberOfNodes;
   uint32_t nodeCounter = 0;
@@ -390,6 +394,9 @@ main (int argc, char *argv[])
   cmd.AddValue ("outputDir",
                 "Directory where the official 5G-LENA SQLite DB will be stored",
                 outputDir);
+  cmd.AddValue ("v2v-channel-model",
+                "V2V channel model: V2V-Highway (default) or V2V-Urban",
+                v2v_channel_model);
   cmd.AddValue ("baseline", "Baseline for PRR calculation", m_baseline_prr);
   cmd.AddValue ("met-sup","Use the Metric supervisor or not",m_metric_sup);
   cmd.AddValue ("rx-drop-prob-cam", "Application-level probability to drop received CAM packets", rx_drop_prob_cam);
@@ -621,6 +628,23 @@ main (int argc, char *argv[])
   // Parse the command line
   cmd.Parse (argc, argv);
 
+  BandwidthPartInfo::Scenario v2vChannelScenario;
+  bool registerUrbanBuildings = false;
+  if (v2v_channel_model == "V2V-Highway")
+    {
+      v2vChannelScenario = BandwidthPartInfo::V2V_Highway;
+    }
+  else if (v2v_channel_model == "V2V-Urban")
+    {
+      v2vChannelScenario = BandwidthPartInfo::V2V_Urban;
+      registerUrbanBuildings = true;
+    }
+  else
+    {
+      NS_FATAL_ERROR ("Unsupported v2v-channel-model '" << v2v_channel_model
+                      << "'. Valid values are V2V-Highway and V2V-Urban");
+    }
+
   const std::unordered_map<std::string, double> perVehicleEquivalentDbm =
     ParsePerVehicleEquivalentDbm (per_vehicle_prr_profile);
 
@@ -692,6 +716,60 @@ main (int argc, char *argv[])
   MobilityHelper mobility;
   mobility.Install (allSlUesContainer);
 
+  if (registerUrbanBuildings)
+    {
+      // These bounds are copied exactly from
+      // experiments/future_transport_2026/scene.manifest.json.  They are the
+      // two PLY building footprints used by the paired Sionna RT scenario,
+      // expressed in the same SUMO-local XY coordinate system.
+      Ptr<Building> northBlock = CreateObject<Building> ();
+      northBlock->SetBoundaries (Box (-128.0, -90.0, 8.0, 35.0, 0.0, 14.0));
+      northBlock->SetBuildingType (Building::Office);
+      northBlock->SetExtWallsType (Building::ConcreteWithWindows);
+      northBlock->SetNFloors (1);
+
+      Ptr<Building> southBlock = CreateObject<Building> ();
+      southBlock->SetBoundaries (Box (-128.0, -90.0, -35.0, -8.0, 0.0, 11.0));
+      southBlock->SetBuildingType (Building::Office);
+      southBlock->SetExtWallsType (Building::ConcreteWithWindows);
+      southBlock->SetNFloors (1);
+
+      BuildingsHelper::Install (allSlUesContainer);
+
+      // Keep this probe independent of traffic dynamics.  Its two outdoor
+      // links respectively avoid and traverse the north-block footprint, so
+      // it detects a coordinate-system or registration error before a run is
+      // accepted as V2V-Urban.
+      NodeContainer geometryProbeNodes;
+      geometryProbeNodes.Create (4);
+      MobilityHelper geometryProbeMobility;
+      geometryProbeMobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+      geometryProbeMobility.Install (geometryProbeNodes);
+      geometryProbeNodes.Get (0)->GetObject<MobilityModel> ()->SetPosition (Vector (-150.0, 0.0, 1.5));
+      geometryProbeNodes.Get (1)->GetObject<MobilityModel> ()->SetPosition (Vector (-70.0, 0.0, 1.5));
+      geometryProbeNodes.Get (2)->GetObject<MobilityModel> ()->SetPosition (Vector (-150.0, 20.0, 1.5));
+      geometryProbeNodes.Get (3)->GetObject<MobilityModel> ()->SetPosition (Vector (-70.0, 20.0, 1.5));
+      BuildingsHelper::Install (geometryProbeNodes);
+      Ptr<BuildingsChannelConditionModel> geometryProbe =
+        CreateObject<BuildingsChannelConditionModel> ();
+      const bool clearPathLos = geometryProbe->GetChannelCondition (
+        geometryProbeNodes.Get (0)->GetObject<MobilityModel> (),
+        geometryProbeNodes.Get (1)->GetObject<MobilityModel> ())->IsLos ();
+      const bool blockedPathNlos = geometryProbe->GetChannelCondition (
+        geometryProbeNodes.Get (2)->GetObject<MobilityModel> (),
+        geometryProbeNodes.Get (3)->GetObject<MobilityModel> ())->IsNlos ();
+      NS_ABORT_MSG_UNLESS (clearPathLos && blockedPathNlos,
+                           "V2V-Urban building geometry probe failed");
+      std::cout << "NR-SIDELINK-CHANNEL,model=V2V-Urban,buildings_registered=2"
+                << ",bounds=-128:-90:8:35:14;-128:-90:-35:-8:11" << std::endl;
+      std::cout << "NR-SIDELINK-URBAN-GEOMETRY-PROBE,clear_path_los=" << clearPathLos
+                << ",building_path_nlos=" << blockedPathNlos << std::endl;
+    }
+  else
+    {
+      std::cout << "NR-SIDELINK-CHANNEL,model=V2V-Highway,buildings_registered=0" << std::endl;
+    }
+
   /*
    * Setup the NR module. We create the various helpers needed for the
    * NR simulation:
@@ -721,7 +799,7 @@ main (int argc, char *argv[])
   // CcBwpCreator expects hertz, whereas the sidelink BWP field below uses
   // units of 100 kHz. Keep the two representations explicitly consistent.
   const double channelBandwidthHz = static_cast<double> (bandwidthBandSl) * 100000.0;
-  CcBwpCreator::SimpleOperationBandConf bandConfSl (centralFrequencyBandSl, channelBandwidthHz, numCcPerBand, BandwidthPartInfo::V2V_Highway);
+  CcBwpCreator::SimpleOperationBandConf bandConfSl (centralFrequencyBandSl, channelBandwidthHz, numCcPerBand, v2vChannelScenario);
   std::cout << "NR-SIDELINK-BANDWIDTH,bandwidthBandSl_100kHz=" << bandwidthBandSl
             << ",operation_band_hz=" << channelBandwidthHz << std::endl;
   //CcBwpCreator::SimpleOperationBandConf bandConfSl (centralFrequencyBandSl, bandwidthBandSl, numCcPerBand, BandwidthPartInfo::CV2X_UrbanMicrocell);

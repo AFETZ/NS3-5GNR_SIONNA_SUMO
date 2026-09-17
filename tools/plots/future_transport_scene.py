@@ -84,7 +84,7 @@ def _save(fig, out: Path) -> tuple[Path, Path]:
     svg = out / "figure_1_synthetic_intersection.svg"
     png = out / "figure_1_synthetic_intersection.png"
     fig.savefig(svg, bbox_inches="tight")
-    fig.savefig(png, bbox_inches="tight", dpi=300)
+    fig.savefig(png, bbox_inches="tight", dpi=600)
     return svg, png
 
 
