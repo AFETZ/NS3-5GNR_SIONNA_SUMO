@@ -146,6 +146,13 @@ namespace ns3
   {
     NS_LOG_FUNCTION(this);
 
+    // close() sends CMD_CLOSE through the active socket.  It is also called
+    // from the destructor, so make repeated shutdown calls harmless.
+    if (mySocket == nullptr)
+      {
+        return;
+      }
+
     try
       {
         this->TraCIAPI::close();

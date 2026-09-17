@@ -652,8 +652,7 @@ def plot_dbm_sweep(out_path: Path, sweep_df: pd.DataFrame) -> None:
     ax_prr.set_title("Continuous channel-strength sweep changes live PRR under the same traffic geometry")
     ax_prr.grid(True, alpha=0.25)
 
-    earliest_action = np.where(
-        np.isfinite(sweep_df["first_cam_reaction_s"]),
+    earliest_action = np.fmin(
         sweep_df["first_cam_reaction_s"],
         sweep_df["first_sensor_reaction_s"],
     )

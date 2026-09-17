@@ -1,6 +1,6 @@
 import time
 import os
-import tensorflow as tf
+import sys
 import numpy as np
 import socket
 import mitsuba as mi
@@ -9,19 +9,44 @@ import subprocess, signal
 import argparse
 
 
+NO_PATH_LOSS_DB = 300.0
+NO_PATH_DELAY_S = 1e5
+NO_PATH_LOS = False
+
+
+def _requested_gpu_count():
+    """Read --gpu before TensorFlow initializes CUDA devices."""
+    for index, argument in enumerate(sys.argv[1:]):
+        if argument.startswith("--gpu="):
+            return int(argument.split("=", 1)[1])
+        if argument == "--gpu" and index + 2 <= len(sys.argv[1:]):
+            return int(sys.argv[index + 2])
+    return 2
+
+
+def _configure_cuda_visibility():
+    if os.getenv("CUDA_VISIBLE_DEVICES") is not None:
+        return
+    gpus = _requested_gpu_count()
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1" if gpus <= 0 else ",".join(str(i) for i in range(gpus))
+
+
+_configure_cuda_visibility()
+
+import tensorflow as tf
+
+
 def _configure_mitsuba_variant():
     requested_variant = os.getenv("SIONNA_MI_VARIANT")
+    gpus = _requested_gpu_count()
     if not requested_variant:
-        # Keep Sionna/Mitsuba default behavior (typically CUDA variant when available).
-        return
+        requested_variant = "cuda_ad_mono_polarized" if gpus > 0 else "llvm_ad_mono_polarized"
+    if gpus > 0 and not requested_variant.startswith("cuda_"):
+        raise RuntimeError(f"--gpu={gpus} requires a CUDA Mitsuba variant, got '{requested_variant}'")
     try:
         mi.set_variant(requested_variant)
     except Exception as exc:
-        if requested_variant != "llvm_ad_mono_polarized":
-            print(f"Failed to set Mitsuba variant '{requested_variant}' ({exc}), falling back to llvm_ad_mono_polarized.")
-            mi.set_variant("llvm_ad_mono_polarized")
-        else:
-            raise
+        raise RuntimeError(f"Requested Mitsuba variant '{requested_variant}' is unavailable") from exc
 
 
 _configure_mitsuba_variant()
@@ -146,6 +171,8 @@ def match_rays_to_cars(paths, sionna_structure):
     }
 
     car_ids = list(adjusted_car_locs.keys())
+    if not car_ids:
+        return matched_paths
     car_positions = np.array([[v["x"], v["y"], v["z"]] for v in adjusted_car_locs.values()])
     car_tree = cKDTree(car_positions)
 
@@ -181,18 +208,21 @@ def match_rays_to_cars(paths, sionna_structure):
                 coeff = path_coefficients[rx_idx, 0, tx_idx, 0, :]
                 delay = delays[rx_idx, tx_idx, :]
                 valid_mask = valid[rx_idx, tx_idx, :].astype(bool)
-                interaction_types = interactions[:, rx_idx, tx_idx, :]  # shape: (5, 12)
-                interaction_types_masked = interaction_types[:, valid_mask]  # shape: (5, <=12)
-                is_los = np.any(interaction_types_masked == 0)
+                interaction_types = interactions[:, rx_idx, tx_idx, :]
+                interaction_types_masked = interaction_types[:, valid_mask]
+                # Sionna encodes a LoS path as a valid path of depth zero, i.e.
+                # all padded interaction slots have InteractionType.NONE (0).
+                is_los = np.any(np.all(interaction_types_masked == 0, axis=0))
 
-                matched_paths[matched_source_car_name][matched_target_car_name]['path_coefficients'].append(coeff)
-                matched_paths[matched_source_car_name][matched_target_car_name]['delays'].append(delay)
+                matched_paths[matched_source_car_name][matched_target_car_name]['path_coefficients'].append(coeff[valid_mask])
+                matched_paths[matched_source_car_name][matched_target_car_name]['delays'].append(delay[valid_mask])
                 matched_paths[matched_source_car_name][matched_target_car_name]['is_los'].append(bool(is_los))
 
             except Exception as e:
                 print(f"Error encountered for source {tx_idx}, target {rx_idx}: {e}")
                 continue
-    print(f"Matching took: {(time.time() - t) * 1000} ms")
+    if sionna_structure["verbose"]:
+        print(f"Matching took: {(time.time() - t) * 1000} ms")
     return matched_paths
 
 def compute_rays(sionna_structure):
@@ -231,8 +261,12 @@ def compute_rays(sionna_structure):
                                             diffuse_reflection=sionna_structure["diffuse_reflection"],
                                             refraction=sionna_structure["refraction"],
                                             synthetic_array=sionna_structure["synthetic_array"],
+                                            max_num_paths_per_src=sionna_structure["max_num_paths_per_src"],
+                                            samples_per_src=sionna_structure["samples_per_src"],
                                             seed=sionna_structure["seed"])
     paths.normalize_delays = False
+    print(f"SIONNA_AUDIT kind=ray_solve valid_paths={int(np.count_nonzero(paths.valid.numpy()))} "
+          f"vehicles={len(sionna_structure['sionna_location_db'])}", flush=True)
 
     sionna_structure["paths"] = paths
 
@@ -244,7 +278,22 @@ def compute_rays(sionna_structure):
     if sionna_structure["time_checker"]:
         print(f"Matching rays to cars took: {(time.time() - t) * 1000} ms")
 
-    # Iterate over sources in matched_paths
+    # Populate every directed vehicle pair. This gives ns-3 the established
+    # no-path sentinels instead of a missing UDP response when no rays exist.
+    sionna_structure["rays_cache"] = {
+        f"car_{src_car_id}": {
+            f"car_{trg_car_id}": {
+                "path_coefficients": [np.array([], dtype=np.complex128)],
+                "delays": [np.array([], dtype=float)],
+                "is_los": [NO_PATH_LOS],
+            }
+            for trg_car_id in sionna_structure["sionna_location_db"]
+            if trg_car_id != src_car_id
+        }
+        for src_car_id in sionna_structure["sionna_location_db"]
+    }
+
+    # Replace sentinels for source-target pairs that Sionna matched.
     for src_car_id in sionna_structure["sionna_location_db"]:
         current_source_car_name = f"car_{src_car_id}"
         if current_source_car_name in matched_paths:
@@ -255,60 +304,11 @@ def compute_rays(sionna_structure):
                 current_target_car_name = f"car_{trg_car_id}"
                 if current_target_car_name != current_source_car_name:  # Skip case where source == target
                     if current_target_car_name in matched_paths_for_source:
-                        if current_source_car_name not in sionna_structure["rays_cache"]:
-                            sionna_structure["rays_cache"][current_source_car_name] = {}
-                        # Cache the matched paths for this source-target pair
                         sionna_structure["rays_cache"][current_source_car_name][current_target_car_name] = \
                             matched_paths_for_source[current_target_car_name]
                         if sionna_structure["verbose"]:
                             print(
                                 f"Cached paths for source {current_source_car_name} to target {current_target_car_name}")
-                    else:
-                        # Force an update if the source or target wasn't matched
-                        for car_id in sionna_structure["sionna_location_db"]:
-                            car_name = f"car_{car_id}"
-                            if sionna_structure["scene"].get(car_name):
-                                from_sionna = sionna_structure["scene"].get(car_name)
-                                new_position = [sionna_structure["SUMO_live_location_db"][car_id]["x"],
-                                                sionna_structure["SUMO_live_location_db"][car_id]["y"],
-                                                sionna_structure["SUMO_live_location_db"][car_id]["z"]]
-                                from_sionna.position = new_position
-                                # Update Sionna location database with new positions
-                                sionna_structure["sionna_location_db"][car_id] = {"x": new_position[0],
-                                                                                  "y": new_position[1],
-                                                                                  "z": new_position[2], "angle":
-                                                                                      sionna_structure[
-                                                                                          "SUMO_live_location_db"][
-                                                                                          car_id]["angle"]}
-                                # Update antenna positions
-                                if sionna_structure["scene"].get(f"{car_name}_tx_antenna"):
-                                    sionna_structure["scene"].get(f"{car_name}_tx_antenna").position = \
-                                        [new_position[0] + sionna_structure["antenna_displacement"][0],
-                                         new_position[1] + sionna_structure["antenna_displacement"][1],
-                                         new_position[2] + sionna_structure["antenna_displacement"][2]]
-                                    if sionna_structure["verbose"]:
-                                        print(f"Forced update for {car_name} and its TX antenna in the scene.")
-                                if sionna_structure["scene"].get(f"{car_name}_rx_antenna"):
-                                    sionna_structure["scene"].get(f"{car_name}_rx_antenna").position = \
-                                        [new_position[0] + sionna_structure["antenna_displacement"][0],
-                                         new_position[1] + sionna_structure["antenna_displacement"][1],
-                                         new_position[2] + sionna_structure["antenna_displacement"][2]]
-                                    if sionna_structure["verbose"]:
-                                        print(f"Forced update for {car_name} and its RX antenna in the scene.")
-                            else:
-                                print(f"ERROR: no {car_name} in the scene for forced update, use Blender to check")
-
-                        # Re-do matching with updated locations
-                        t = time.time()
-                        matched_paths = match_rays_to_cars(paths, sionna_structure)
-                        if sionna_structure["time_checker"]:
-                            print(f"Matching rays to cars (double exec) took: {(time.time() - t) * 1000} ms")
-                        if current_source_car_name not in sionna_structure["rays_cache"]:
-                            sionna_structure["rays_cache"][current_source_car_name] = {}
-                        if current_target_car_name in matched_paths[current_source_car_name]:
-                            sionna_structure["rays_cache"][current_source_car_name][current_target_car_name] = \
-                                matched_paths[current_source_car_name][current_target_car_name]
-
     return None
 
 def get_path_loss(car1_id, car2_id, sionna_structure):
@@ -326,21 +326,21 @@ def get_path_loss(car1_id, car2_id, sionna_structure):
 
     total_cir = 0
     if len(path_coefficients) > 0:
-        # Uncoherent paths summation
+        # Narrowband coherent sum of the complex ray coefficients.
         sum_coeffs = np.sum(path_coefficients)
         abs_coeffs = np.abs(sum_coeffs)
         square = abs_coeffs ** 2
         total_cir = square
 
     # Calculate path loss in dB
-    if total_cir > 0:
+    if np.isfinite(total_cir) and total_cir > 0:
         path_loss = -10 * np.log10(total_cir)
     else:
         # Handle the case where path loss calculation is not valid
         if sionna_structure["verbose"]:
             print(
                 f"Pathloss calculation failed for {car1_id}-{car2_id}: got infinite value (not enough rays). Returning 300 dB.")
-        path_loss = 300  # Assign 300 dB for loss cases
+        path_loss = NO_PATH_LOSS_DB
 
     if sionna_structure["time_checker"]:
         print(f"Pathloss calculation took: {(time.time() - t) * 1000} ms")
@@ -369,6 +369,8 @@ def manage_path_loss_request(message, sionna_structure):
     except (ValueError, IndexError) as e:
         print(f"EXCEPTION - Error processing path_loss request: {e}")
         return None
+    except KeyError:
+        return NO_PATH_LOSS_DB
 
 def get_delay(car1_id, car2_id, sionna_structure):
     t = time.time()
@@ -380,12 +382,12 @@ def get_delay(car1_id, car2_id, sionna_structure):
     delays_flat = delays.flatten()
 
     # Filter positive values
-    positive_values = delays_flat[delays_flat >= 0]
+    positive_values = delays_flat[np.isfinite(delays_flat) & (delays_flat >= 0)]
 
     if positive_values.size > 0:
         min_positive_value = np.min(positive_values)
     else:
-        min_positive_value = 1e5
+        min_positive_value = NO_PATH_DELAY_S
 
     if sionna_structure["time_checker"]:
         print(f"Delay calculation took: {(time.time() - t) * 1000} ms")
@@ -413,6 +415,8 @@ def manage_delay_request(message, sionna_structure):
     except (ValueError, IndexError) as e:
         print(f"EXCEPTION - Error processing delay request: {e}")
         return None
+    except KeyError:
+        return NO_PATH_DELAY_S
 
 def manage_los_request(message, sionna_structure):
     t = time.time()
@@ -441,6 +445,8 @@ def manage_los_request(message, sionna_structure):
     except (ValueError, IndexError) as e:
         print(f"EXCEPTION - Error processing LOS request: {e}")
         return None
+    except KeyError:
+        return [NO_PATH_LOS]
 
 # Function to kill processes using a specific port
 def kill_process_using_port(port, verbose=False):
@@ -457,19 +463,11 @@ def kill_process_using_port(port, verbose=False):
 
 # Configure GPU settings
 def configure_gpu(verbose=False, gpus=0):
-    if os.getenv("CUDA_VISIBLE_DEVICES") is None:
-        if gpus <= 0:
-            # Keep CPU-only behavior for WSL/no-CUDA setups.
-            os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-        elif gpus == 1:
-            # One GPU requested -> first visible GPU.
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        else:
-            # N GPUs requested -> expose [0..N-1].
-            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(gpus))
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
     visible_gpus = tf.config.list_physical_devices('GPU')
+    if gpus > 0 and len(visible_gpus) < gpus:
+        raise RuntimeError(f"Requested {gpus} GPU(s), but TensorFlow can access only {len(visible_gpus)}")
     if visible_gpus:
         try:
             for gpu in visible_gpus:
@@ -501,8 +499,8 @@ def main():
     parser.add_argument('--position-threshold', type=float, help='Position threshold for ray tracing', default=3)
     parser.add_argument('--angle-threshold', type=float, help='Angle threshold for ray tracing', default=90)
     parser.add_argument('--max-depth', type=int, help='Maximum depth for ray tracing', default=5)
-    parser.add_argument('--max-num-paths-per-src', type=int, help='Maximum number of paths per source', default=1e4)
-    parser.add_argument('--samples-per-src', type=int, help='Number of samples per source', default=1e4)
+    parser.add_argument('--max-num-paths-per-src', type=int, help='Maximum number of paths per source', default=10000)
+    parser.add_argument('--samples-per-src', type=int, help='Number of samples per source', default=10000)
     parser.add_argument('--disable-los', action='store_false', help='Flag to exclude LoS paths')
     parser.add_argument('--disable-specular-reflection', action='store_false', help='Flag to exclude specular reflections')
     parser.add_argument('--disable-diffuse-reflection', action='store_false', help='Flag to exclude diffuse reflections')
@@ -616,12 +614,22 @@ def main():
         if message.startswith("CALC_REQUEST_PATHGAIN:"):
             pathloss = manage_path_loss_request(message, sionna_structure)
             if pathloss is not None:
+                status = ("origin" if pathloss == 0 else
+                          "no_path" if pathloss >= NO_PATH_LOSS_DB else
+                          "invalid" if not np.isfinite(pathloss) else "ok")
+                print(f"SIONNA_AUDIT kind=path_gain status={status} value_db={pathloss} "
+                      f"request={message}", flush=True)
                 response = "CALC_DONE_PATHGAIN:" + str(pathloss)
                 udp_socket.sendto(response.encode(), address)
 
         if message.startswith("CALC_REQUEST_DELAY:"):
             delay = manage_delay_request(message, sionna_structure)
             if delay is not None:
+                status = ("origin" if delay == 0 else
+                          "no_path" if delay >= NO_PATH_DELAY_S else
+                          "invalid" if not np.isfinite(delay) else "ok")
+                print(f"SIONNA_AUDIT kind=delay status={status} value_s={delay} "
+                      f"request={message}", flush=True)
                 response = "CALC_DONE_DELAY:" + str(delay)
                 udp_socket.sendto(response.encode(), address)
 

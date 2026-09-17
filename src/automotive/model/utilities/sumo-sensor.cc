@@ -19,6 +19,7 @@
 
 
 #include "sumo-sensor.h"
+#include "sensor-kinematics.h"
 #include <cmath>
 
 
@@ -40,6 +41,9 @@ namespace ns3 {
   {
     m_stationID = 0;
     m_sensorRange = 50.0;
+    m_distanceNoise = CreateObject<NormalRandomVariable>();
+    m_angleNoise = CreateObject<NormalRandomVariable>();
+    m_speedNoise = CreateObject<NormalRandomVariable>();
   }
   SUMOSensor::~SUMOSensor()
   {
@@ -49,6 +53,7 @@ namespace ns3 {
   void
   SUMOSensor::updateDetectedObjects ()
   {
+    m_localDetections.clear();
     using namespace boost::geometry::strategy::transform;
     libsumo::TraCIPosition egoPosXY=m_client->TraCIAPI::vehicle.getPosition(m_id);
     libsumo::TraCIPosition egoPos = m_client->TraCIAPI::simulation.convertXYtoLonLat (egoPosXY.x,egoPosXY.y);
@@ -132,9 +137,9 @@ namespace ns3 {
        {
          LDM::returnedVehicleData_t retveh = {0};
          LDM::LDM_error_t retval = m_LDM->lookup(std::stol(sensedIDs[i].first.substr (3)),retveh);
-         std::normal_distribution<double> dist_distance(m_mean,m_stddev_distance);
-         std::normal_distribution<double> dist_angle(m_mean,m_stddev_angle);
-         std::normal_distribution<double> dist_speed(m_mean,m_stddev_speed);
+         auto dist_distance = [this]() { return m_distanceNoise->GetValue(m_mean, m_stddev_distance*m_stddev_distance); };
+         auto dist_angle = [this]() { return m_angleNoise->GetValue(m_mean, m_stddev_angle*m_stddev_angle); };
+         auto dist_speed = [this]() { return m_speedNoise->GetValue(m_mean, m_stddev_speed*m_stddev_speed); };
 
 
          //if (retval==LDM::LDM_ITEM_NOT_FOUND || (retval==LDM::LDM_OK && retveh.vehData.detected))
@@ -152,8 +157,8 @@ namespace ns3 {
 
               //Get position with noise
               libsumo::TraCIPosition objectPosition = m_client->TraCIAPI::vehicle.getPosition(objectData.ID);
-              objectPosition.x += (dist_distance(m_generator)*dist_factor);
-              objectPosition.y += (dist_distance(m_generator)*dist_factor);            
+              objectPosition.x += (dist_distance()*dist_factor);
+              objectPosition.y += (dist_distance()*dist_factor);
 
 
               objectData.lon = m_client->TraCIAPI::simulation.convertXYtoLonLat (objectPosition.x
@@ -161,12 +166,12 @@ namespace ns3 {
               objectData.lat = m_client->TraCIAPI::simulation.convertXYtoLonLat (objectPosition.x
                                                                                  ,objectPosition.y).y;
               objectData.elevation = AltitudeValue_unavailable;
-              objectData.heading = m_client->vehicle.getAngle (objectData.ID)+(dist_angle(m_generator)*dist_factor);
-              objectData.speed_ms = m_client->vehicle.getSpeed (objectData.ID)+(dist_speed(m_generator)*dist_factor);
+              objectData.heading = m_client->vehicle.getAngle (objectData.ID)+(dist_angle()*dist_factor);
+              objectData.speed_ms = std::max(0.0, m_client->vehicle.getSpeed (objectData.ID)+(dist_speed()*dist_factor));
               objectData.timestamp_us = Simulator::Now ().GetMicroSeconds ();
               objectData.camTimestamp = objectData.timestamp_us;
-              objectData.vehicleWidth = OptionalDataItem<long>(long ((m_client->vehicle.getWidth(objectData.ID)+(dist_distance(m_generator)*dist_factor/10))*DECI));
-              objectData.vehicleLength = OptionalDataItem<long>(long ((m_client->vehicle.getLength(objectData.ID)+(dist_distance(m_generator)*dist_factor/10))*DECI));
+              objectData.vehicleWidth = OptionalDataItem<long>(long ((m_client->vehicle.getWidth(objectData.ID)+(dist_distance()*dist_factor/10))*DECI));
+              objectData.vehicleLength = OptionalDataItem<long>(long ((m_client->vehicle.getLength(objectData.ID)+(dist_distance()*dist_factor/10))*DECI));
               //Compute relative distance with x axis being defined by the egoVehicle's angle
               libsumo::TraCIPosition egoPosition = m_client->TraCIAPI::vehicle.getPosition(m_id);
               point_type egoReference(egoPosition.x,egoPosition.y);
@@ -180,8 +185,8 @@ namespace ns3 {
               objectData.yDistance = OptionalDataItem<long>(long (boost::geometry::get<1>(relReference)*CENTI -
                                                                   boost::geometry::get<1>(egoReference)*CENTI));//Y Distance in centimeters
 
-              objectData.xDistAbs = OptionalDataItem<long>(long (objectPosition.x - egoPosition.x)*CENTI);
-              objectData.yDistAbs = OptionalDataItem<long>(long (objectPosition.y - egoPosition.y)*CENTI);
+              objectData.xDistAbs = OptionalDataItem<long>(SensorCentiUnits(objectPosition.x - egoPosition.x));
+              objectData.yDistAbs = OptionalDataItem<long>(SensorCentiUnits(objectPosition.y - egoPosition.y));
               //Compute relative speed with x axis being defined by the egoVehicle's angle
               point_type egoSpeed(m_client->vehicle.getSpeed (m_id),0);
               point_type relSpeed(objectData.speed_ms,0);
@@ -194,15 +199,16 @@ namespace ns3 {
 
               objectData.xSpeed = OptionalDataItem <long>((long) xspeed);
               objectData.ySpeed = OptionalDataItem <long>((long) yspeed);
-              objectData.xSpeedAbs = OptionalDataItem <long>((long) (objectData.speed_ms * cos(DEG_2_RAD(objectData.heading)))*CENTI);
-              objectData.ySpeedAbs = OptionalDataItem <long>((long) (objectData.speed_ms * sin(DEG_2_RAD(objectData.heading)))*CENTI);
+              const auto velocity = SumoVelocityXY(objectData.speed_ms, objectData.heading);
+              objectData.xSpeedAbs = OptionalDataItem <long>(SensorCentiUnits(velocity.first));
+              objectData.ySpeedAbs = OptionalDataItem <long>(SensorCentiUnits(velocity.second));
 
               objectData.longitudinalAcceleration = OptionalDataItem <long> (long (m_client->vehicle.getAcceleration (objectData.ID)));
               objectData.xAccAbs = OptionalDataItem <long> (long (m_client->vehicle.getAcceleration (objectData.ID) * cos(DEG_2_RAD(objectData.heading))));
               objectData.yAccAbs = OptionalDataItem <long> (long (m_client->vehicle.getAcceleration (objectData.ID) * sin(DEG_2_RAD(objectData.heading))));
               objectData.confidence = long (dist_factor*CENTI); //Distance based confidence
               objectData.perceivedBy = OptionalDataItem<long> ((long) m_stationID);
-              long relAngle = (long) ((objectData.heading + dist_angle(m_generator) - m_client->vehicle.getAngle(m_id))*DECI);
+              long relAngle = (long) ((objectData.heading + dist_angle() - m_client->vehicle.getAngle(m_id))*DECI);
               if(relAngle<0)
                 objectData.angle = OptionalDataItem <long> (relAngle+3600);//Relative 'negative' Heading angle
               else
@@ -216,6 +222,16 @@ namespace ns3 {
               if(retveh.vehData.associatedCVs.isAvailable ())
                 objectData.associatedCVs = OptionalDataItem<std::vector<long>>(retveh.vehData.associatedCVs.getData ());
 
+              // Retain a fresh local observation even when the shared LDM
+              // classifies this station as connected following a received CAM.
+              auto localObservation = objectData;
+              localObservation.detected = true;
+              m_localDetections.push_back(localObservation);
+              if (m_sensorLog.is_open()) {
+                m_sensorLog << Simulator::Now().GetSeconds() << ',' << m_id << ','
+                  << objectData.ID << ',' << objectPosition.x << ',' << objectPosition.y << ','
+                  << objectData.speed_ms << ',' << objectData.heading << ',' << sensedIDs[i].second << '\n';
+              }
               retval = m_LDM->insert(objectData);
 
               if(retval!=LDM::LDM_OK && retval!=LDM::LDM_UPDATED) {
@@ -238,7 +254,7 @@ namespace ns3 {
     auto angle = m_client->vehicle.getAngle (id);
     width = m_client->vehicle.getWidth (id);
     length = m_client->vehicle.getLength (id);
-    angle = -1.0 * (angle-90);
+    angle = angle - 90; // Boost rotates clockwise: local +X is vehicle forward.
 
 
     // Scale with vehicle size
@@ -273,5 +289,6 @@ namespace ns3 {
   SUMOSensor::cleanup()
   {
     Simulator::Cancel(m_event_updateDetectedObjects);
+    if (m_sensorLog.is_open()) { m_sensorLog.flush(); }
   }
 }

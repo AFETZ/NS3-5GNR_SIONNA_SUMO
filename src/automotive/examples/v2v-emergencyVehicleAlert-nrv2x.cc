@@ -270,6 +270,7 @@ main (int argc, char *argv[])
 
   double penetrationRate = 0.7;
   bool send_cam = true;
+  bool send_cpm = true;
   bool sionna = false;
   std::string server_ip = "";
   bool local_machine = false;
@@ -340,7 +341,7 @@ main (int argc, char *argv[])
   // NR parameters. We will take the input from the command line, and then we
   // will pass them inside the NR module.
   double centralFrequencyBandSl = 5.89e9; // band n47  TDD //Here band is analogous to channel
-  uint16_t bandwidthBandSl = 400;
+  uint16_t bandwidthBandSl = 400; // NR sidelink units of 100 kHz: 400 = 40 MHz.
   double txPower = 23; //dBm
   std::string tddPattern = "UL|UL|UL|UL|UL|UL|UL|UL|UL|UL|";
   std::string slBitMap = "1|1|1|1|1|1|1|1|1|1";
@@ -510,6 +511,7 @@ main (int argc, char *argv[])
                 v2x_awareness_junction_enable);
   cmd.AddValue ("penetrationRate", "Rate of vehicles equipped with wireless communication devices", penetrationRate);
   cmd.AddValue ("send-cam", "Turn on or off CAM dissemination for this scenario", send_cam);
+  cmd.AddValue ("send-cpm", "Turn on or off CPM dissemination for this scenario", send_cpm);
   cmd.AddValue ("sionna", "Enable SIONNA usage", sionna);
   cmd.AddValue ("sionna-server-ip", "SIONNA server IP address", server_ip);
   cmd.AddValue ("sionna-local-machine", "SIONNA will be executed on local machine", local_machine);
@@ -716,7 +718,12 @@ main (int argc, char *argv[])
   /* Create the configuration for the CcBwpHelper. SimpleOperationBandConf
    * creates a single BWP per CC
    */
-  CcBwpCreator::SimpleOperationBandConf bandConfSl (centralFrequencyBandSl, bandwidthBandSl, numCcPerBand, BandwidthPartInfo::V2V_Highway);
+  // CcBwpCreator expects hertz, whereas the sidelink BWP field below uses
+  // units of 100 kHz. Keep the two representations explicitly consistent.
+  const double channelBandwidthHz = static_cast<double> (bandwidthBandSl) * 100000.0;
+  CcBwpCreator::SimpleOperationBandConf bandConfSl (centralFrequencyBandSl, channelBandwidthHz, numCcPerBand, BandwidthPartInfo::V2V_Highway);
+  std::cout << "NR-SIDELINK-BANDWIDTH,bandwidthBandSl_100kHz=" << bandwidthBandSl
+            << ",operation_band_hz=" << channelBandwidthHz << std::endl;
   //CcBwpCreator::SimpleOperationBandConf bandConfSl (centralFrequencyBandSl, bandwidthBandSl, numCcPerBand, BandwidthPartInfo::CV2X_UrbanMicrocell);
 
   // By using the configuration created, it is time to make the operation bands
@@ -948,6 +955,16 @@ main (int argc, char *argv[])
 
   //Communicate the above pre-configuration to the NrSlHelper
   nrSlHelper->InstallNrSlPreConfiguration (allSlUesNetDeviceContainer, slPreConfigNr);
+  Ptr<NrUeNetDevice> bandwidthAuditDevice = DynamicCast<NrUeNetDevice> (allSlUesNetDeviceContainer.Get (0));
+  Ptr<NrUePhy> bandwidthAuditPhy = bandwidthAuditDevice->GetPhy (0);
+  if (std::abs (bandSl.m_channelBandwidth - channelBandwidthHz) > 0.5 ||
+      std::abs (static_cast<double> (bandwidthAuditPhy->GetChannelBandwidth ()) - channelBandwidthHz) > 0.5 ||
+      (bandwidthBandSl == 400 && numerologyBwpSl == 2 && bandwidthAuditPhy->GetRbNum () != 53))
+    {
+      NS_FATAL_ERROR ("Inconsistent NR sidelink operation band, PHY bandwidth, or resource blocks");
+    }
+  std::cout << "NR-SIDELINK-PHY,channel_bandwidth_hz=" << bandwidthAuditPhy->GetChannelBandwidth ()
+            << ",resource_blocks=" << bandwidthAuditPhy->GetRbNum () << std::endl;
 
   /****************************** End SL Configuration ***********************/
 
@@ -1137,6 +1154,7 @@ main (int argc, char *argv[])
   EmergencyVehicleAlertHelper.SetAttribute ("Model", StringValue ("nrv2x"));
   EmergencyVehicleAlertHelper.SetAttribute ("MetricSupervisor", PointerValue (metSup));
   EmergencyVehicleAlertHelper.SetAttribute ("SendCAM", BooleanValue (send_cam));
+  EmergencyVehicleAlertHelper.SetAttribute ("SendCPM", BooleanValue (send_cpm));
   EmergencyVehicleAlertHelper.SetAttribute ("RxDropProbCam", DoubleValue (rx_drop_prob_cam));
   EmergencyVehicleAlertHelper.SetAttribute ("RxDropProbCpm", DoubleValue (rx_drop_prob_cpm));
   EmergencyVehicleAlertHelper.SetAttribute ("RxDropProbPhyCam", DoubleValue (rx_drop_prob_phy_cam));
@@ -1531,6 +1549,10 @@ main (int argc, char *argv[])
   Simulator::Stop (Seconds(simTime));
 
   Simulator::Run ();
+
+  // End the TraCI session while the client is still alive.  SumoStop() is
+  // idempotent, so TraciClient's destructor will not send CMD_CLOSE again.
+  sumoClient->SumoStop ();
 
   if (enable_official_sqlite)
     {

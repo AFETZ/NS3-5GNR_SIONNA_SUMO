@@ -677,6 +677,10 @@ namespace ns3
     m_sensor->setVDP(traci_vdp);
     m_sensor->setLDM (m_LDM);
     m_sensor->setSensorRange (std::max (1.0, m_sensor_range_m));
+    if (!m_csv_name.empty ())
+      {
+        m_sensor->setLogFile (m_csv_name + "-" + m_id + "-SENSOR.csv");
+      }
 
     m_sensor_reaction_focus_station_id = -1;
     if (!m_sensor_reaction_focus_vehicle_id.empty ())
@@ -1435,13 +1439,13 @@ namespace ns3
   emergencyVehicleAlert::SensorWatchdogTick ()
   {
     const double periodS = std::max (0.01, m_sensor_reaction_period_ms / 1000.0);
-    if (!m_sensor_reaction_enable || m_type == "emergency" || m_LDM == nullptr || m_client == nullptr)
+    if (!m_sensor_reaction_enable || m_type == "emergency" || m_sensor == nullptr || m_client == nullptr)
       {
         return;
       }
 
-    std::vector<LDM::returnedVehicleData_t> localDetections;
-    const bool hasDetections = m_LDM->getAllPOs (localDetections);
+    const auto& localDetections = m_sensor->getLocalDetections ();
+    const bool hasDetections = !localDetections.empty ();
 
     bool hazardDetected = false;
     double minHazardDistance = std::numeric_limits<double>::infinity ();
@@ -1455,12 +1459,11 @@ namespace ns3
         const double distanceThreshold = std::max (0.0, m_sensor_reaction_distance_threshold_m);
         const double ttcThreshold = std::max (0.0, m_sensor_reaction_ttc_threshold_s);
         const double egoHeadingRad = DEG_2_RAD (egoHeadingDeg);
-        const double egoVelX = egoSpeed * std::cos (egoHeadingRad);
-        const double egoVelY = egoSpeed * std::sin (egoHeadingRad);
+        const double egoVelX = egoSpeed * std::sin (egoHeadingRad);
+        const double egoVelY = egoSpeed * std::cos (egoHeadingRad);
 
-        for (auto& detection : localDetections)
+        for (auto object : localDetections)
           {
-            auto& object = detection.vehData;
             if (!object.detected)
               {
                 continue;
@@ -1517,7 +1520,7 @@ namespace ns3
               }
 
             const double distance = std::hypot (relPosX, relPosY);
-            if (distance > distanceThreshold)
+            if (distance > distanceThreshold || distance <= 1e-6)
               {
                 continue;
               }
@@ -1532,8 +1535,8 @@ namespace ns3
             else
               {
                 const double objectHeadingRad = DEG_2_RAD (object.heading);
-                objectVelX = object.speed_ms * std::cos (objectHeadingRad);
-                objectVelY = object.speed_ms * std::sin (objectHeadingRad);
+                objectVelX = object.speed_ms * std::sin (objectHeadingRad);
+                objectVelY = object.speed_ms * std::cos (objectHeadingRad);
               }
 
             const double relVelX = objectVelX - egoVelX;

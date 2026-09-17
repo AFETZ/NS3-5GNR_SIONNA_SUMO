@@ -1,0 +1,36 @@
+{
+  "scene_sha256": "fc72c90cec475e8016b3cb26cfa95cb8a61e4f3192d8b94c5b79fd0c5bb65c36",
+  "sumo_net_sha256": "665a7b3401b381591da44d9c269aa2e28df3a1a865dd55ed0e0e9c2c3e31d1e5",
+  "sumo_location": {
+    "netOffset": "-394175.96,-4989734.74",
+    "convBoundary": "-150.00,-100.00,150.00,100.00",
+    "origBoundary": "7.655664,45.053168,7.678963,45.076295",
+    "projParameter": "+proj=utm +zone=32 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+  },
+  "buildings": [
+    [
+      "north_block",
+      -128.0,
+      -90.0,
+      8.0,
+      35.0,
+      14.0
+    ],
+    [
+      "south_block",
+      -128.0,
+      -90.0,
+      -35.0,
+      -8.0,
+      11.0
+    ]
+  ],
+  "meshes_sha256": {
+    "car_2.ply": "533e09a4792c6d3ae4316ee24c1394212d012d9ebffd081d1f58606144838ab3",
+    "car_3.ply": "533e09a4792c6d3ae4316ee24c1394212d012d9ebffd081d1f58606144838ab3",
+    "north_block.ply": "3042e11bd697e3b54f06d460002127dbe671072f4812c2d69305dc4c698eeaf4",
+    "road_plane.ply": "7d5adb9563f9a51a1a47502dab38a4bb822918f1dfc0003d4cb593a71095671d",
+    "south_block.ply": "3080b7e5bfadce3a68b8d8b36e1f54c865b31c3ccd58713f08debbb5a5627b7a"
+  },
+  "description": "Synthetic two-block intersection scene in SUMO local XY; not a surveyed city"
+}
