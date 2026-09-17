@@ -255,7 +255,29 @@ def _bootstrap(rows, arm_a, arm_b, field, draws=2000, seed=20260917):
 
 
 def summarize(rows):
-    out = {"collision": {}, "first_action": {}, "paired_discordance": [], "bootstrap": {}}
+    out = {"collision": {}, "first_action": {}, "first_cam_reception": {},
+           "paired_discordance": [], "bootstrap": {}}
+    for kind, horizon in (("calibration", 5.0), ("behavior", HORIZON)):
+        out["first_cam_reception"][kind] = {}
+        for arm in sorted({r["arm"] for r in rows if r["kind"] == kind and r["arm"] != "radar_only"}):
+            items = [r for r in rows if r["kind"] == kind and r["arm"] == arm]
+            observations = []
+            for row in items:
+                received_at = row.get("first_cam_rx_s")
+                if received_at is None:
+                    observations.append((horizon, False))
+                else:
+                    received_at = _finite(received_at, "first CAM reception time")
+                    if not 0 <= received_at <= horizon:
+                        raise ValueError(f"first CAM reception outside completed horizon: {kind}/{arm}")
+                    observations.append((received_at, True))
+            out["first_cam_reception"][kind][arm] = {
+                "time_origin": "scenario_start_s", "window_s": [2.0, 5.0] if kind == "calibration" else [0.0, HORIZON],
+                "method": "Kaplan-Meier with no-reception right censoring at window end",
+                "events": sum(event for _, event in observations),
+                "right_censored": sum(not event for _, event in observations),
+                "median_s": survival_quantile(observations, .5),
+                "p90_s": survival_quantile(observations, .9)}
     for arm in sorted({r["arm"] for r in rows if r["kind"] == "behavior"}):
         items = [r for r in rows if r["kind"] == "behavior" and r["arm"] == arm]
         s = sum(r["collision"] for r in items); out["collision"][arm] = {"runs": len(items), "collisions": s, "rate": s / len(items) if items else None, "wilson95": wilson(s, len(items)) if items else None}

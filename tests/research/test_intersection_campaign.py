@@ -55,6 +55,15 @@ class IntersectionCampaignTest(unittest.TestCase):
         self.assertEqual((action["events"], action["right_censored"], action["median_s"]), (1, 2, None))
         self.assertEqual(action["source_counts"], {"cam_reaction": 1})
 
+    def test_first_cam_reception_keeps_calibration_censoring_separate(self):
+        rows = [dict(kind="calibration", block=f"b{i}", arm="native_bad", cam_prr=1.0 if i == 0 else 0.0,
+                     first_cam_rx_s=2.5 if i == 0 else None)
+                for i in range(3)]
+        reception = campaign.summarize(rows)["first_cam_reception"]["calibration"]["native_bad"]
+        self.assertEqual((reception["events"], reception["right_censored"], reception["median_s"],
+                          reception["p90_s"], reception["window_s"]),
+                         (1, 2, None, None, [2.0, 5.0]))
+
     def test_manifest_file_records_verify_hash_and_bytes(self):
         path = self.run / "artifacts/eva-collision.xml"
         manifest = self.run / "manifest.json"
