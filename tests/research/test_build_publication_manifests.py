@@ -20,6 +20,7 @@ class PublicationManifestTests(unittest.TestCase):
             for stem in ("figure_1_synthetic_intersection", "figure_c_calibration_prr",
                          "figure_d_behavioral_collisions", "figure_e_sionna_no_ray_sentinel"):
                 (figures / f"{stem}.png").write_bytes(stem.encode())
+                (figures / f"{stem}.svg").write_bytes(stem.encode())
             a, f = build("urban_dynamic_v3", research, analysis, figures, repo, ["tools/analyze.py"])
             write_manifests(analysis, figures, a, f)
             saved = json.loads((figures / "figure-manifest.json").read_text(encoding="utf-8"))

@@ -133,7 +133,7 @@ def generate(net: Path, routes: Path, scene: Path, out: Path) -> tuple[Path, Pat
         ax.add_patch(arrow)
 
     ax.plot(*junction, marker="o", ms=3.5, color="#222222", zorder=6)
-    ax.annotate("Priority junction w", xy=junction, xytext=(-180, 48), fontsize=8,
+    ax.annotate("Priority junction", xy=junction, xytext=(-176, 48), fontsize=8,
                 arrowprops={"arrowstyle": "-", "color": "#333333", "lw": .8})
     ax.set(xlabel="Local x coordinate (m)", ylabel="Local y coordinate (m)", aspect="equal",
            xlim=(-180, -30), ylim=(-120, 120))

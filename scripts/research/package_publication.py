@@ -18,6 +18,15 @@ import tempfile
 
 
 STATUS = "completed_pending_metric_audit"
+FIGURE_STEMS = {
+    "frozen_highway": {"figure_a_emergency_prr", "figure_b_emergency_km_p90"},
+    "urban_dynamic_v3": {"figure_1_synthetic_intersection", "figure_c_calibration_prr",
+                          "figure_d_behavioral_collisions", "figure_e_sionna_no_ray_sentinel"},
+}
+
+
+def expected_figure_files(stems: set[str]) -> set[str]:
+    return {f"{stem}.{suffix}" for stem in stems for suffix in ("png", "svg")}
 EXPECTED_JOBS = 410
 
 
@@ -95,7 +104,11 @@ def validate_execution_checkout(research: Path, repo: Path, runs: list[Path]) ->
 def validate_analysis_and_figures(analysis: Path, figures: Path, research: Path, cohort: str,
                                  analysis_repo: Path | None, archive_root: str = "study") -> list[tuple[Path, str]]:
     """Keep post-freeze analysis and cohort-scoped figures auditable and separate."""
-    plan_name = "run_matrix.all.plan.json" if cohort == "frozen_highway" else "run_matrix.urban.plan.json"
+    plan_names = {"frozen_highway": "run_matrix.all.plan.json",
+                  "urban_dynamic_v3": "run_matrix.urban_dynamic_v3.plan.json"}
+    if cohort not in plan_names:
+        raise ValueError(f"unsupported publication cohort: {cohort}")
+    plan_name = plan_names[cohort]
     analysis_manifest = read_json(analysis / "analysis-manifest.json")
     expected = {"schema": 1, "cohort": cohort,
                 "input_plan_sha256": sha256(research / plan_name),
@@ -121,17 +134,21 @@ def validate_analysis_and_figures(analysis: Path, figures: Path, research: Path,
         hash_map(source_map, "analysis_files_sha256")
 
     figures_manifest = read_json(figures / "figure-manifest.json")
-    allowed = ({"figure_a_emergency_prr", "figure_b_emergency_km_p90"}
-               if cohort == "frozen_highway" else
-               {"figure_1_synthetic_intersection", "figure_c_calibration_prr",
-                "figure_d_behavioral_collisions", "figure_e_sionna_no_ray_sentinel"})
+    try:
+        allowed = FIGURE_STEMS[cohort]
+    except KeyError as error:
+        raise ValueError(f"unsupported publication cohort: {cohort}") from error
     if (figures_manifest.get("schema") != 1 or figures_manifest.get("cohort") != cohort
             or figures_manifest.get("input_analysis_manifest_sha256") != sha256(analysis / "analysis-manifest.json")):
         raise ValueError("figure manifest is not bound to this cohort's analysis")
     hashes = hash_map(figures_manifest.get("files"), "figure files")
-    stems = {Path(name).stem for name in hashes}
-    if not stems or not stems <= allowed:
-        raise ValueError(f"figure manifest contains figures outside the {cohort} cohort")
+    expected = expected_figure_files(allowed)
+    if set(hashes) != expected:
+        unexpected = sorted(set(hashes) - expected)
+        if unexpected:
+            raise ValueError(f"figure manifest contains figures outside the {cohort} cohort: {unexpected}")
+        raise ValueError(f"wrong or incomplete figure set for {cohort}: "
+                         f"expected {sorted(expected)}, found {sorted(hashes)}")
     for name, digest in hashes.items():
         path = figures / relative_path(name, "figure")
         if not path.is_file() or sha256(path).lower() != digest:

@@ -21,6 +21,11 @@ COHORTS = {
 }
 
 
+def expected_figure_files(stems: set[str]) -> set[str]:
+    """Return the required paired raster/vector filenames for these stems."""
+    return {f"{stem}.{suffix}" for stem in stems for suffix in ("png", "svg")}
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -65,10 +70,10 @@ def build(cohort: str, research: Path, analysis: Path, figures: Path,
         source_hashes[name] = sha256(path)
     outputs = files_below(analysis, {"analysis-manifest.json"})
     figure_files = files_below(figures, {"figure-manifest.json"})
-    stems = {Path(name).stem for name in figure_files}
-    if stems != allowed_stems or any(Path(name).suffix.lower() not in {".png", ".svg"}
-                                     for name in figure_files):
-        raise ValueError(f"wrong or incomplete figure set for {cohort}: {sorted(stems)}")
+    expected = expected_figure_files(allowed_stems)
+    if set(figure_files) != expected:
+        raise ValueError(f"wrong or incomplete figure set for {cohort}: "
+                         f"expected {sorted(expected)}, found {sorted(figure_files)}")
     analysis_manifest = {
         "schema": 1, "cohort": cohort,
         "input_plan_sha256": sha256(plan),

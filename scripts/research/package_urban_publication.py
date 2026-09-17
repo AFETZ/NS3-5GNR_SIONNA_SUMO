@@ -16,6 +16,12 @@ import tempfile
 
 
 STATUS = "completed_pending_metric_audit"
+FIGURE_STEMS = {"figure_1_synthetic_intersection", "figure_c_calibration_prr",
+                "figure_d_behavioral_collisions", "figure_e_sionna_no_ray_sentinel"}
+
+
+def expected_figure_files(stems: set[str]) -> set[str]:
+    return {f"{stem}.{suffix}" for stem in stems for suffix in ("png", "svg")}
 EXPECTED_JOBS = 270
 CAMPAIGN_VERSION = "urban_dynamic_v3"
 PLAN_NAME = f"run_matrix.{CAMPAIGN_VERSION}.plan.json"
@@ -117,15 +123,17 @@ def validate_analysis_and_figures(analysis: Path, figures: Path, research: Path,
     elif source_map not in ({}, None):
         hash_map(source_map, "analysis_files_sha256")
     figures_manifest = read_json(figures / "figure-manifest.json")
-    allowed = {"figure_1_synthetic_intersection", "figure_c_calibration_prr",
-               "figure_d_behavioral_collisions", "figure_e_sionna_no_ray_sentinel"}
     if (figures_manifest.get("schema") != 1 or figures_manifest.get("cohort") != CAMPAIGN_VERSION
             or figures_manifest.get("input_analysis_manifest_sha256") != sha256(analysis / "analysis-manifest.json")):
         raise ValueError("figure manifest is not bound to this cohort's analysis")
     hashes = hash_map(figures_manifest.get("files"), "figure files")
-    stems = {Path(name).stem for name in hashes}
-    if not stems or not stems <= allowed:
-        raise ValueError(f"figure manifest contains figures outside the {CAMPAIGN_VERSION} cohort")
+    expected = expected_figure_files(FIGURE_STEMS)
+    if set(hashes) != expected:
+        unexpected = sorted(set(hashes) - expected)
+        if unexpected:
+            raise ValueError(f"figure manifest contains figures outside the {CAMPAIGN_VERSION} cohort: {unexpected}")
+        raise ValueError(f"wrong or incomplete figure set for {CAMPAIGN_VERSION}: "
+                         f"expected {sorted(expected)}, found {sorted(hashes)}")
     for name, digest in hashes.items():
         path = figures / relative_path(name, "figure")
         if not path.is_file() or sha256(path).lower() != digest:

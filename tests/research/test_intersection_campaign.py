@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("intersection_campaign", ROOT / "tools/analysis/intersection_campaign.py")
@@ -89,6 +90,25 @@ class IntersectionCampaignTest(unittest.TestCase):
             campaign._requested_arms("radar_only,native_good", campaign.BEHAVIOR_ARMS, "behavior")
         with self.assertRaisesRegex(ValueError, "calibration arms must be exactly"):
             campaign._requested_arms("sionna_good,sionna_bad,native_good,radar_only", campaign.CALIBRATION_ARMS, "calibration")
+
+    def test_native_sensitivity_requires_complete_full_arm_directories(self):
+        runs_root = Path(self.tmp.name) / "runs"
+        selected = (("behavior", "production", ("radar_only", "native_good", "native_bad")),
+                    ("calibration", "calibration-production", ("native_good", "native_bad")))
+        full = {"behavior": campaign.BEHAVIOR_ARMS, "calibration": campaign.CALIBRATION_ARMS}
+        for kind, root_name, _ in selected:
+            for block in campaign.PRODUCTION_BLOCKS:
+                for arm in full[kind]:
+                    (runs_root / root_name / block / arm).mkdir(parents=True)
+        with (mock.patch.object(campaign, "_manifest", return_value={}),
+              mock.patch.object(campaign, "_production_metadata", return_value={"input": "same"}),
+              mock.patch.object(campaign, "_required", return_value=Path(self.tmp.name)),
+              mock.patch.object(campaign, "_netstate", return_value=[]),
+              mock.patch.object(campaign, "_trajectory", return_value=[])):
+            campaign._production_gate(runs_root, selected, full)
+            (runs_root / "production" / "block-01" / "sionna_good").rmdir()
+            with self.assertRaisesRegex(ValueError, "behavior arms in block-01 must be exactly"):
+                campaign._production_gate(runs_root, selected, full)
 
     def test_paired_trajectory_gate_uses_registered_window(self):
         identical = [(0.0, ("a", 1.0, 2.0), ("b", 3.0, 4.0))]

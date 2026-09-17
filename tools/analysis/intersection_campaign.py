@@ -212,7 +212,7 @@ def _assert_matched_trajectories(trajectories, kind: str, block: str):
             raise ValueError(f"pre-intervention trajectory differs ({window}) in {block}/{arm}")
 
 
-def _production_gate(runs_root: Path, specifications):
+def _production_gate(runs_root: Path, specifications, full_arms_by_kind=None):
     """Reject any campaign that cannot support the registered paired analysis."""
     all_inputs = None
     for kind, root_name, arms in specifications:
@@ -223,8 +223,9 @@ def _production_gate(runs_root: Path, specifications):
         for block in PRODUCTION_BLOCKS:
             block_dir = root / block
             actual_arms = {path.name for path in block_dir.iterdir() if path.is_dir()}
-            if actual_arms != set(arms):
-                raise ValueError(f"{kind} arms in {block} must be exactly: {', '.join(arms)}")
+            required_arms = full_arms_by_kind[kind] if full_arms_by_kind else arms
+            if actual_arms != set(required_arms):
+                raise ValueError(f"{kind} arms in {block} must be exactly: {', '.join(required_arms)}")
             paired = []
             for arm in arms:
                 run = block_dir / arm
@@ -298,12 +299,24 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--behavior-arms", default=",".join(BEHAVIOR_ARMS))
     parser.add_argument("--calibration-arms", default=",".join(CALIBRATION_ARMS))
+    parser.add_argument("--analysis-view", choices=("full", "native_configuration_sensitivity"), default="full",
+                        help="Use the full matched campaign or the predeclared native-only view of a complete original cohort.")
     args = parser.parse_args(); rows = []
-    specifications = (
-        ("behavior", "production", _requested_arms(args.behavior_arms, BEHAVIOR_ARMS, "behavior")),
-        ("calibration", "calibration-production", _requested_arms(args.calibration_arms, CALIBRATION_ARMS, "calibration")),
-    )
-    _production_gate(args.runs_root, specifications)
+    if args.analysis_view == "native_configuration_sensitivity":
+        if args.behavior_arms != ",".join(BEHAVIOR_ARMS) or args.calibration_arms != ",".join(CALIBRATION_ARMS):
+            parser.error("--analysis-view selects fixed arms; omit --behavior-arms and --calibration-arms")
+        specifications = (
+            ("behavior", "production", ("radar_only", "native_good", "native_bad")),
+            ("calibration", "calibration-production", ("native_good", "native_bad")),
+        )
+        full_arms_by_kind = {"behavior": BEHAVIOR_ARMS, "calibration": CALIBRATION_ARMS}
+    else:
+        specifications = (
+            ("behavior", "production", _requested_arms(args.behavior_arms, BEHAVIOR_ARMS, "behavior")),
+            ("calibration", "calibration-production", _requested_arms(args.calibration_arms, CALIBRATION_ARMS, "calibration")),
+        )
+        full_arms_by_kind = None
+    _production_gate(args.runs_root, specifications, full_arms_by_kind)
     for kind, root_name, arms in specifications:
         for block in PRODUCTION_BLOCKS:
             block_dir = args.runs_root / root_name / block
