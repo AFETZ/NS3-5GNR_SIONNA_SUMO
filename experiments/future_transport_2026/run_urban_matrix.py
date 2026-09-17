@@ -18,6 +18,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 CAMPAIGN = HERE / "run_campaign.py"
+CAMPAIGN_VERSION = "urban_dynamic_v3"
+CHANNEL_CONDITION_UPDATE_MS = 100
 
 
 def load(name: str, path: Path):
@@ -38,13 +40,15 @@ def jobs_for(runs: Path, campaign) -> list[dict[str, object]]:
             jobs.append({"campaign": "urban_behavioral", "block": block, "arm": arm,
                          "sionna": bool(campaign.ARMS[arm]["sionna"]), "out": str(out),
                          "argv": ["python3", str(CAMPAIGN), "--arm", arm, "--block", str(block),
-                                  "--out", str(runs), "--channel-scenario=V2V-Urban"]})
+                                  "--out", str(runs), "--channel-scenario=V2V-Urban",
+                                  f"--channel-condition-update-ms={CHANNEL_CONDITION_UPDATE_MS}"]})
         for arm in (name for name in campaign.ARMS if name != "radar_only"):
             out = runs / "calibration-production" / f"block-{block:02d}" / arm
             jobs.append({"campaign": "urban_calibration", "block": block, "arm": arm,
                          "sionna": bool(campaign.ARMS[arm]["sionna"]), "out": str(out),
                          "argv": ["python3", str(CAMPAIGN), "--arm", arm, "--block", str(block),
-                                  "--calibration", "--out", str(runs), "--channel-scenario=V2V-Urban"]})
+                                  "--calibration", "--out", str(runs), "--channel-scenario=V2V-Urban",
+                                  f"--channel-condition-update-ms={CHANNEL_CONDITION_UPDATE_MS}"]})
     for ordinal, job in enumerate(jobs, 1):
         job["ordinal"] = ordinal
     return jobs
@@ -60,9 +64,18 @@ def urban_manifest_valid(out: Path) -> tuple[bool, str]:
         return False, "manifest channel scenario is not V2V-Urban"
     if manifest.get("geometry_version") != "grounded_vehicle_v2":
         return False, "manifest geometry version is not grounded_vehicle_v2"
+    if manifest.get("campaign_version") != CAMPAIGN_VERSION:
+        return False, f"manifest campaign version is not {CAMPAIGN_VERSION}"
+    if manifest.get("channel_condition_update_ms") != CHANNEL_CONDITION_UPDATE_MS:
+        return False, "manifest channel-condition update is not 100 ms"
     audit = manifest.get("channel_audit")
     if not isinstance(audit, dict) or audit.get("model") != "V2V-Urban" or audit.get("buildings_registered") != 2:
         return False, "manifest lacks valid V2V-Urban building audit"
+    if (audit.get("actual_condition_model") != "ns3::ThreeGppV2vUrbanChannelConditionModel"
+            or audit.get("channel_condition_update_ms") != CHANNEL_CONDITION_UPDATE_MS
+            or audit.get("three_gpp_channel_update_ms") != 0
+            or audit.get("shadowing_enabled") is not False):
+        return False, "manifest lacks valid actual dynamic V2V-Urban channel audit"
     geometry = manifest.get("scene_geometry")
     if not isinstance(geometry, dict) or len(geometry.get("buildings", [])) != 2:
         return False, "manifest lacks two-building scene geometry"
@@ -98,22 +111,25 @@ def main() -> None:
         return urban_manifest_valid(Path(str(job["out"])))
     scheduler.audit_completed = audit_completed
     jobs = jobs_for(runs, campaign)
-    plan_path = research / "run_matrix.urban.plan.json"
-    progress_path = research / "run_matrix.urban.progress.json"
+    plan_path = research / f"run_matrix.{CAMPAIGN_VERSION}.plan.json"
+    progress_path = research / f"run_matrix.{CAMPAIGN_VERSION}.progress.json"
     preflight = scheduler.runtime_preflight(strict=args.execute)
     preflight["urban_channel"] = "V2V-Urban"
-    plan = {"schema": 1, "campaign": "urban", "jobs": jobs, "preflight": preflight,
+    preflight["channel_condition_update_ms"] = CHANNEL_CONDITION_UPDATE_MS
+    plan = {"schema": 1, "campaign": CAMPAIGN_VERSION, "jobs": jobs, "preflight": preflight,
             "channel_scenario": "V2V-Urban", "geometry_version": "grounded_vehicle_v2",
+            "channel_condition_update_ms": CHANNEL_CONDITION_UPDATE_MS,
             "geometry_manifest": str(HERE / "scene.manifest.json")}
     if plan_path.exists():
         existing = json.loads(plan_path.read_text(encoding="utf-8"))
         if (existing.get("jobs") != jobs or existing.get("channel_scenario") != "V2V-Urban"
-                or existing.get("geometry_version") != "grounded_vehicle_v2"):
+                or existing.get("geometry_version") != "grounded_vehicle_v2"
+                or existing.get("channel_condition_update_ms") != CHANNEL_CONDITION_UPDATE_MS):
             raise RuntimeError(f"Existing urban plan differs; outputs are preserved: {plan_path}")
     else:
         scheduler.atomic_json(plan_path, plan)
     states, blockers = scheduler.progress_for(jobs, preflight["source_hashes"])
-    progress = {"schema": 1, "campaign": "urban", "plan": str(plan_path), "updated_at_unix": time.time(),
+    progress = {"schema": 1, "campaign": CAMPAIGN_VERSION, "plan": str(plan_path), "updated_at_unix": time.time(),
                 "states": states, "blockers": blockers}
     scheduler.atomic_json(progress_path, progress)
     if args.plan or not args.execute:

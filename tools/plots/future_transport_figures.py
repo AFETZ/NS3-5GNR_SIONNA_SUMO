@@ -1,8 +1,10 @@
 """Create auditable figures for the locked Future Transportation campaigns.
 
 The input directories are the public JSON outputs of ``emergency_summary.py``
-and ``intersection_campaign.py``.  Each figure is written as both vector SVG
-and 300-dpi PNG; the script never derives a new inferential statistic.
+and ``intersection_campaign.py``. Each cohort can be plotted independently,
+so its archive contains only figures reproducible from that cohort's data.
+Each figure is written as both vector SVG and 600-dpi PNG; the script never
+derives a new inferential statistic.
 """
 from __future__ import annotations
 
@@ -180,12 +182,39 @@ def figure_sentinels(plt, rows, out):
     _save(fig, out, "figure_e_sionna_no_ray_sentinel")
 
 
-def generate(emergency_dir: Path, intersection_dir: Path, out: Path, native_model: str = "unspecified") -> None:
+def _empty_output(out: Path) -> None:
     if out.exists() and any(out.iterdir()):
         raise FileExistsError(f"refusing to overwrite a non-empty output directory: {out}")
+    out.mkdir(parents=True, exist_ok=True)
+
+
+def generate_emergency(emergency_dir: Path, out: Path) -> None:
+    _empty_output(out)
+    emergency_rows, emergency_summary = _load(emergency_dir)
+    plt = _style()
+    figure_emergency_prr(plt, emergency_rows, emergency_summary, out)
+    figure_emergency_km(plt, emergency_summary, out)
+
+
+def generate_intersection(intersection_dir: Path, out: Path, native_model: str = "unspecified") -> None:
+    _empty_output(out)
+    intersection_rows, intersection_summary = _load(intersection_dir)
+    plt = _style()
+    labels = dict(ARM_LABEL)
+    if native_model in ("urban", "highway"):
+        label = native_model.capitalize()
+        labels["native_good"] = f"{label} native, base NF"
+        labels["native_bad"] = f"{label} native, +53 dB NF"
+    figure_calibration(plt, intersection_rows, intersection_summary, out, labels)
+    figure_collisions(plt, intersection_summary, out, labels)
+    figure_sentinels(plt, intersection_rows, out)
+
+
+def generate(emergency_dir: Path, intersection_dir: Path, out: Path, native_model: str = "unspecified") -> None:
+    """Backward-compatible combined output for local preview only."""
+    _empty_output(out)
     emergency_rows, emergency_summary = _load(emergency_dir)
     intersection_rows, intersection_summary = _load(intersection_dir)
-    out.mkdir(parents=True, exist_ok=True)
     plt = _style()
     labels = dict(ARM_LABEL)
     if native_model in ("urban", "highway"):
@@ -201,12 +230,22 @@ def generate(emergency_dir: Path, intersection_dir: Path, out: Path, native_mode
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--emergency-dir", type=Path, required=True)
-    parser.add_argument("--intersection-dir", type=Path, required=True)
+    parser.add_argument("--campaign", choices=("all", "emergency", "intersection"), default="all")
+    parser.add_argument("--emergency-dir", type=Path)
+    parser.add_argument("--intersection-dir", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--native-model", choices=("unspecified", "urban", "highway"), default="unspecified")
     args = parser.parse_args()
-    generate(args.emergency_dir.resolve(), args.intersection_dir.resolve(), args.out.resolve(), args.native_model)
+    if args.campaign in ("all", "emergency") and args.emergency_dir is None:
+        parser.error("--emergency-dir is required for emergency figures")
+    if args.campaign in ("all", "intersection") and args.intersection_dir is None:
+        parser.error("--intersection-dir is required for intersection figures")
+    if args.campaign == "emergency":
+        generate_emergency(args.emergency_dir.resolve(), args.out.resolve())
+    elif args.campaign == "intersection":
+        generate_intersection(args.intersection_dir.resolve(), args.out.resolve(), args.native_model)
+    else:
+        generate(args.emergency_dir.resolve(), args.intersection_dir.resolve(), args.out.resolve(), args.native_model)
 
 
 if __name__ == "__main__":

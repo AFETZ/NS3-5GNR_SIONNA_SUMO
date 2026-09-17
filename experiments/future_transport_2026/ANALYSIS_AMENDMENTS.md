@@ -100,3 +100,25 @@ calibration pilots in a different seed block verified the geometry log marker,
 valid GPU ray solves, unchanged pre-intervention trajectories, and absence of
 calibration commands. The corrected environment manifest was re-frozen after
 this repair and before the new production plan.
+
+During a subsequent read-only source audit, before aggregate outcome analysis,
+the corrected-geometry urban execution was found to have inherited
+`ChannelConditionModel::UpdatePeriod=0` from the example's
+`enableChannelRandomness=false` branch. The ns-3 implementation caches the
+first channel condition for a node pair when this period is zero. Thus the
+registered buildings affect the pair's initial LOS/NLOS classification, but
+the classification does not follow vehicle motion. The second urban attempt
+was stopped with 189 completed and 81 pending cells; all 270 planned cells
+are excluded from the paper's estimates, and its separate volume and
+manifests are preserved. No aggregate outcome was inspected to make this
+decision.
+
+A third, independently frozen urban replication will use a separate
+100-ms channel-condition update period while keeping shadowing disabled and
+the existing 3GPP fading update setting unchanged. An excluded technical
+pilot must obtain the actual channel-condition model installed in the NR
+bandwidth part and demonstrate LOS-to-NLOS change for the same node pair
+after crossing the registered building footprint. Only a complete new
+270-cell run matrix with its own hashes and integrity gates can support the
+primary dynamic-urban comparison. Earlier urban attempts are diagnostics,
+not pooled replicates.

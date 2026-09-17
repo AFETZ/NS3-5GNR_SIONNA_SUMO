@@ -363,6 +363,11 @@ main (int argc, char *argv[])
   int slThresPsschRsrp = -128;
   bool enableChannelRandomness = false;
   uint16_t channelUpdatePeriod = 500; //ms
+  // This is deliberately separate from channelUpdatePeriod.  The latter also
+  // enables shadowing and matrix-channel updates for the legacy randomness
+  // mode; the former only refreshes the V2V-Urban LOS/NLOS condition cache.
+  uint16_t channelConditionUpdateMs = 0;
+  bool urbanConditionPilotAudit = false;
   uint8_t mcs = 14;
 
   /*
@@ -620,6 +625,13 @@ main (int argc, char *argv[])
   cmd.AddValue ("channelUpdatePeriod",
                 "The channel update period in ms",
                 channelUpdatePeriod);
+  cmd.AddValue ("channel-condition-update-ms",
+                "V2V-Urban channel-condition refresh period in ms; leaves shadowing and "
+                "ThreeGppChannelModel updates unchanged",
+                channelConditionUpdateMs);
+  cmd.AddValue ("urban-condition-pilot-audit",
+                "Excluded-pilot audit of the actual V2V-Urban BWP condition model",
+                urbanConditionPilotAudit);
   cmd.AddValue ("mcs",
                 "The MCS to used for sidelink",
                 mcs);
@@ -643,6 +655,11 @@ main (int argc, char *argv[])
     {
       NS_FATAL_ERROR ("Unsupported v2v-channel-model '" << v2v_channel_model
                       << "'. Valid values are V2V-Highway and V2V-Urban");
+    }
+  if ((channelConditionUpdateMs > 0 || urbanConditionPilotAudit) && !registerUrbanBuildings)
+    {
+      NS_FATAL_ERROR ("channel-condition-update-ms and urban-condition-pilot-audit require "
+                      "--v2v-channel-model=V2V-Urban");
     }
 
   const std::unordered_map<std::string, double> perVehicleEquivalentDbm =
@@ -825,6 +842,13 @@ main (int argc, char *argv[])
       nrHelper->SetChannelConditionModelAttribute ("UpdatePeriod", TimeValue (MilliSeconds (0)));
       nrHelper->SetPathlossAttribute ("ShadowingEnabled", BooleanValue (false));
     }
+  if (channelConditionUpdateMs > 0)
+    {
+      // Do not change ThreeGppChannelModel::UpdatePeriod or ShadowingEnabled
+      // here.  This opt-in urban study isolates dynamic LOS/NLOS conditions.
+      nrHelper->SetChannelConditionModelAttribute ("UpdatePeriod",
+                                                    TimeValue (MilliSeconds (channelConditionUpdateMs)));
+    }
 
   /*
    * Initialize channel and pathloss, plus other things inside bandSl. If needed,
@@ -834,6 +858,65 @@ main (int argc, char *argv[])
    */
   nrHelper->InitializeOperationBand (&bandSl);
   allBwps = CcBwpCreator::GetAllBwps ({bandSl});
+  if (registerUrbanBuildings)
+    {
+      Ptr<ThreeGppPropagationLossModel> actualPropagation =
+        DynamicCast<ThreeGppPropagationLossModel> (allBwps.at (0).get ()->m_propagation);
+      Ptr<ThreeGppSpectrumPropagationLossModel> actualSpectrum =
+        DynamicCast<ThreeGppSpectrumPropagationLossModel> (allBwps.at (0).get ()->m_3gppChannel);
+      NS_ABORT_MSG_IF (actualPropagation == nullptr || actualSpectrum == nullptr,
+                       "V2V-Urban BWP channel objects are absent");
+      Ptr<ChannelConditionModel> actualCondition = actualPropagation->GetChannelConditionModel ();
+      Ptr<ThreeGppChannelModel> actualChannel =
+        DynamicCast<ThreeGppChannelModel> (actualSpectrum->GetChannelModel ());
+      NS_ABORT_MSG_IF (actualCondition == nullptr || actualChannel == nullptr,
+                       "V2V-Urban BWP model audit could not resolve actual channel objects");
+      TimeValue actualConditionUpdate;
+      TimeValue actualChannelUpdate;
+      BooleanValue actualShadowing;
+      actualCondition->GetAttribute ("UpdatePeriod", actualConditionUpdate);
+      actualChannel->GetAttribute ("UpdatePeriod", actualChannelUpdate);
+      actualPropagation->GetAttribute ("ShadowingEnabled", actualShadowing);
+      const uint64_t conditionMs = actualConditionUpdate.Get ().GetMilliSeconds ();
+      const uint64_t channelMs = actualChannelUpdate.Get ().GetMilliSeconds ();
+      std::cout << "NR-SIDELINK-ACTUAL-CHANNEL,condition_model="
+                << actualCondition->GetInstanceTypeId ().GetName ()
+                << ",condition_update_ms=" << conditionMs
+                << ",three_gpp_channel_update_ms=" << channelMs
+                << ",shadowing_enabled=" << actualShadowing.Get () << std::endl;
+      NS_ABORT_MSG_IF (conditionMs != channelConditionUpdateMs,
+                       "V2V-Urban condition update period differs from command-line request");
+      if (channelConditionUpdateMs > 0)
+        {
+          NS_ABORT_MSG_IF (actualShadowing.Get () || channelMs != 0,
+                           "Dynamic V2V-Urban condition update changed shadowing or ThreeGppChannelModel updates");
+        }
+      if (urbanConditionPilotAudit)
+        {
+          NodeContainer dynamicProbeNodes;
+          dynamicProbeNodes.Create (2);
+          MobilityHelper dynamicProbeMobility;
+          dynamicProbeMobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+          dynamicProbeMobility.Install (dynamicProbeNodes);
+          BuildingsHelper::Install (dynamicProbeNodes);
+          Ptr<MobilityModel> firstProbe = dynamicProbeNodes.Get (0)->GetObject<MobilityModel> ();
+          Ptr<MobilityModel> secondProbe = dynamicProbeNodes.Get (1)->GetObject<MobilityModel> ();
+          firstProbe->SetPosition (Vector (-150.0, 0.0, 1.5));
+          secondProbe->SetPosition (Vector (-70.0, 0.0, 1.5));
+          const bool initialLos = actualCondition->GetChannelCondition (firstProbe, secondProbe)->IsLos ();
+          Simulator::Schedule (MilliSeconds (120), [actualCondition, firstProbe, secondProbe, initialLos] {
+            // The moved segment crosses the north-block footprint recorded in
+            // the paired RT scene.  This audit is only enabled for an excluded pilot.
+            firstProbe->SetPosition (Vector (-150.0, 20.0, 1.5));
+            secondProbe->SetPosition (Vector (-70.0, 20.0, 1.5));
+            const bool movedNlos = actualCondition->GetChannelCondition (firstProbe, secondProbe)->IsNlos ();
+            NS_ABORT_MSG_UNLESS (initialLos && movedNlos,
+                                 "V2V-Urban dynamic condition pilot audit did not transition LOS to NLOS");
+            std::cout << "NR-SIDELINK-URBAN-DYNAMIC-PILOT-AUDIT,initial_los=" << initialLos
+                      << ",moved_nlos=" << movedNlos << ",sample_time_ms=120" << std::endl;
+          });
+        }
+    }
 
 
   /*

@@ -38,6 +38,14 @@ class FutureTransportFiguresTest(unittest.TestCase):
             figures.generate(emergency, intersection, out)
             self.assertEqual(len(list(out.glob("*.svg"))), 5)
             self.assertEqual(len(list(out.glob("*.png"))), 5)
+            emergency_out, intersection_out = root / "emergency_figures", root / "intersection_figures"
+            figures.generate_emergency(emergency, emergency_out)
+            figures.generate_intersection(intersection, intersection_out, "urban")
+            self.assertEqual({p.stem for p in emergency_out.glob("*.png")},
+                             {"figure_a_emergency_prr", "figure_b_emergency_km_p90"})
+            self.assertEqual({p.stem for p in intersection_out.glob("*.png")},
+                             {"figure_c_calibration_prr", "figure_d_behavioral_collisions",
+                              "figure_e_sionna_no_ray_sentinel"})
 
 
 if __name__ == "__main__":

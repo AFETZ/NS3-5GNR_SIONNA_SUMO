@@ -68,7 +68,8 @@ def ready_udp(port):
     return False
 
 
-def command(arm, block, out, calibration=False, channel_scenario=None):
+def command(arm, block, out, calibration=False, channel_scenario=None,
+            channel_condition_update_ms=0, urban_condition_pilot_audit=False):
     cfg = ARMS[arm]
     prefix = out / "artifacts/eva"
     args = [
@@ -104,6 +105,14 @@ def command(arm, block, out, calibration=False, channel_scenario=None):
     ]
     if channel_scenario is not None:
         args.append(f"--v2v-channel-model={channel_scenario}")
+    if channel_condition_update_ms:
+        if channel_scenario != "V2V-Urban":
+            raise ValueError("channel_condition_update_ms requires V2V-Urban")
+        args.append(f"--channel-condition-update-ms={channel_condition_update_ms}")
+    if urban_condition_pilot_audit:
+        if channel_scenario != "V2V-Urban":
+            raise ValueError("urban_condition_pilot_audit requires V2V-Urban")
+        args.append("--urban-condition-pilot-audit=1")
     return [str(ROOT / "ns3"), "run", "--no-build", shlex.join(args)]
 
 
@@ -148,7 +157,7 @@ def stop_server(process, log):
     log.close()
 
 
-def validate_channel_audit(simulator_log, channel_scenario):
+def validate_channel_audit(simulator_log, channel_scenario, channel_condition_update_ms=0):
     marker = re.search(r"NR-SIDELINK-CHANNEL,model=([^,\s]+),buildings_registered=(\d+)(?:,bounds=([^\s]+))?", simulator_log)
     if not marker:
         raise ValueError("NR sidelink channel/building audit marker is absent")
@@ -163,10 +172,26 @@ def validate_channel_audit(simulator_log, channel_scenario):
                        for building in scene["buildings"]]
     if blocks != expected_bounds:
         raise ValueError(f"NR sidelink building bounds differ from scene manifest: {bounds}")
-    return {"model": model, "buildings_registered": int(building_count), "bounds": blocks}
+    audit = {"model": model, "buildings_registered": int(building_count), "bounds": blocks}
+    if channel_condition_update_ms:
+        actual = re.search(
+            r"NR-SIDELINK-ACTUAL-CHANNEL,condition_model=([^,\s]+),condition_update_ms=(\d+),"
+            r"three_gpp_channel_update_ms=(\d+),shadowing_enabled=(\d+)", simulator_log)
+        if not actual:
+            raise ValueError("Actual V2V-Urban channel audit marker is absent")
+        condition_model, condition_ms, channel_ms, shadowing = actual.groups()
+        if (condition_model != "ns3::ThreeGppV2vUrbanChannelConditionModel"
+                or int(condition_ms) != channel_condition_update_ms or int(channel_ms) != 0
+                or int(shadowing) != 0):
+            raise ValueError(f"Actual V2V-Urban channel audit failed: {actual.group(0)}")
+        audit["actual_condition_model"] = condition_model
+        audit["channel_condition_update_ms"] = int(condition_ms)
+        audit["three_gpp_channel_update_ms"] = int(channel_ms)
+        audit["shadowing_enabled"] = bool(int(shadowing))
+    return audit
 
 
-def inspect_outputs(out, arm, channel_scenario=None):
+def inspect_outputs(out, arm, channel_scenario=None, channel_condition_update_ms=0):
     artifacts = out / "artifacts"
     collision = artifacts / "eva-collision.xml"
     root = ET.parse(collision).getroot()
@@ -198,7 +223,8 @@ def inspect_outputs(out, arm, channel_scenario=None):
     phy = re.search(r"NR-SIDELINK-PHY,channel_bandwidth_hz=(\d+),resource_blocks=(\d+)", simulator_log)
     if not band or not phy or int(band[1]) != 400 or abs(float(band[2]) - 40e6) > 1 or int(phy[1]) != 40_000_000 or int(phy[2]) != 53:
         raise ValueError("NR sidelink frequency-band/PHY bandwidth audit failed")
-    channel_audit = validate_channel_audit(simulator_log, channel_scenario) if channel_scenario else None
+    channel_audit = (validate_channel_audit(simulator_log, channel_scenario, channel_condition_update_ms)
+                     if channel_scenario else None)
     noise_figures = {}
     for vehicle, equivalent_dbm, base_db, effective_db in re.findall(
         r"PER-VEHICLE-EQUIV-DBM-APPLIED,id=(veh[23]),equiv_tx_power_dbm=([\d.+-]+),"
@@ -259,10 +285,15 @@ def inspect_outputs(out, arm, channel_scenario=None):
             "channel_audit": channel_audit}
 
 
-def run_one(arm, block, destination, pilot, deadline, calibration=False, channel_scenario=None):
+def run_one(arm, block, destination, pilot, deadline, calibration=False, channel_scenario=None,
+            channel_condition_update_ms=0, urban_condition_pilot_audit=False):
     preflight(arm)
     if calibration and arm == "radar_only":
         raise ValueError("Radar-only has no CAM link to calibrate")
+    if channel_condition_update_ms and channel_scenario != "V2V-Urban":
+        raise ValueError("channel_condition_update_ms requires V2V-Urban")
+    if urban_condition_pilot_audit and not pilot:
+        raise ValueError("urban_condition_pilot_audit is restricted to excluded pilots")
     cohort = "calibration-pilot" if pilot else "calibration-production"
     if not calibration:
         cohort = "pilot" if pilot else "production"
@@ -277,6 +308,8 @@ def run_one(arm, block, destination, pilot, deadline, calibration=False, channel
         "cohort": "radio_calibration" if calibration else "behavioral_intersection",
         "channel_scenario": channel_scenario or "V2V-Highway",
         "geometry_version": "grounded_vehicle_v2" if channel_scenario == "V2V-Urban" else "legacy_offset",
+        "channel_condition_update_ms": channel_condition_update_ms,
+        "campaign_version": "urban_dynamic_v3" if channel_condition_update_ms else "urban_grounded_v2",
         "scene_geometry": json.loads((ROOT / "experiments/future_transport_2026/scene.manifest.json").read_text()),
         "rng_seed": 1, "rng_run": block, "sumo_seed": block,
         "sensor_streams": {str(i): [100000+i*8+j for j in range(3)] for i in (2,3)},
@@ -297,7 +330,8 @@ def run_one(arm, block, destination, pilot, deadline, calibration=False, channel
                       ROOT / "src/automotive/examples/v2v-emergencyVehicleAlert-nrv2x.cc",
                       *(ROOT / "experiments/future_transport_2026/meshes").glob("*.ply"))},
         "analysis_window_s": [2.,5.] if calibration else [0.,20.],
-        "command": command(arm,block,out,calibration,channel_scenario),
+        "command": command(arm, block, out, calibration, channel_scenario,
+                             channel_condition_update_ms, urban_condition_pilot_audit),
     }
     path = out / "manifest.json"
     def write():path.write_text(json.dumps(manifest,indent=2,default=str)+"\n",encoding="utf-8")
@@ -315,7 +349,7 @@ def run_one(arm, block, destination, pilot, deadline, calibration=False, channel
             raise RuntimeError(f"ns-3 exit {result.returncode}")
         stop_server(server, log)
         server = log = None
-        manifest.update(inspect_outputs(out,arm,channel_scenario))
+        manifest.update(inspect_outputs(out, arm, channel_scenario, channel_condition_update_ms))
         manifest["status"] = "completed_pending_metric_audit"
     except Exception as exc:
         manifest["status"] = "failed"
@@ -336,6 +370,8 @@ def main():
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--calibration", action="store_true")
     parser.add_argument("--channel-scenario", choices=("V2V-Highway", "V2V-Urban"))
+    parser.add_argument("--channel-condition-update-ms", type=int, default=0)
+    parser.add_argument("--urban-condition-pilot-audit", action="store_true")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -343,10 +379,19 @@ def main():
         parser.error("block must be 1..30")
     if args.calibration and args.arm == "radar_only":
         parser.error("Radar-only has no CAM link to calibrate")
+    if args.channel_condition_update_ms < 0:
+        parser.error("channel-condition-update-ms must be non-negative")
+    if args.channel_condition_update_ms and args.channel_scenario != "V2V-Urban":
+        parser.error("channel-condition-update-ms requires --channel-scenario=V2V-Urban")
+    if args.urban_condition_pilot_audit and not args.pilot:
+        parser.error("urban-condition-pilot-audit requires --pilot")
     if args.dry_run:
-        print(shlex.join(command(args.arm,args.block,args.out,args.calibration,args.channel_scenario)))
+        print(shlex.join(command(args.arm, args.block, args.out, args.calibration, args.channel_scenario,
+                                 args.channel_condition_update_ms, args.urban_condition_pilot_audit)))
     else:
-        print(run_one(args.arm,args.block,args.out,args.pilot,args.timeout,args.calibration,args.channel_scenario))
+        print(run_one(args.arm, args.block, args.out, args.pilot, args.timeout, args.calibration,
+                      args.channel_scenario, args.channel_condition_update_ms,
+                      args.urban_condition_pilot_audit))
 
 
 if __name__ == "__main__":
