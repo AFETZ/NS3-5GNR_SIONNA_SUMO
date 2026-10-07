@@ -82,11 +82,13 @@ def read_profile_equiv_dbm(profile_csv: Path) -> float:
 
 def read_collision(collision_xml: Path, veh_a: str, veh_b: str) -> tuple[int, float]:
     if not collision_xml.exists():
-        return 0, math.nan
+        raise FileNotFoundError(f"Collision outcome unverified: missing {collision_xml}")
     try:
         root = ET.parse(collision_xml).getroot()
-    except Exception:
-        return 0, math.nan
+    except ET.ParseError as exc:
+        raise ValueError(f"Collision outcome unverified: malformed {collision_xml}") from exc
+    if root.tag != "collisions":
+        raise ValueError(f"Unexpected collision XML root {root.tag!r}: {collision_xml}")
     found = 0
     first_t = math.nan
     for coll in root.findall("collision"):

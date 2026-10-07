@@ -28,6 +28,7 @@
 #include "ns3/applications-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/point-to-point-module.h"
+#include "ns3/buildings-module.h"
 #include "ns3/nr-module.h"
 #include "ns3/lte-module.h"
 #include "ns3/stats-module.h"
@@ -264,12 +265,16 @@ main (int argc, char *argv[])
   std::string simTag = "default";
   std::string outputDir = "./";
   bool vehicle_vis = false;
+  // Preserve the historical highway default.  The urban setting is intended
+  // for the synthetic two-block intersection disclosed in the research setup.
+  std::string v2v_channel_model = "V2V-Highway";
 
   int numberOfNodes;
   uint32_t nodeCounter = 0;
 
   double penetrationRate = 0.7;
   bool send_cam = true;
+  bool send_cpm = true;
   bool sionna = false;
   std::string server_ip = "";
   bool local_machine = false;
@@ -340,7 +345,7 @@ main (int argc, char *argv[])
   // NR parameters. We will take the input from the command line, and then we
   // will pass them inside the NR module.
   double centralFrequencyBandSl = 5.89e9; // band n47  TDD //Here band is analogous to channel
-  uint16_t bandwidthBandSl = 400;
+  uint16_t bandwidthBandSl = 400; // NR sidelink units of 100 kHz: 400 = 40 MHz.
   double txPower = 23; //dBm
   std::string tddPattern = "UL|UL|UL|UL|UL|UL|UL|UL|UL|UL|";
   std::string slBitMap = "1|1|1|1|1|1|1|1|1|1";
@@ -358,6 +363,11 @@ main (int argc, char *argv[])
   int slThresPsschRsrp = -128;
   bool enableChannelRandomness = false;
   uint16_t channelUpdatePeriod = 500; //ms
+  // This is deliberately separate from channelUpdatePeriod.  The latter also
+  // enables shadowing and matrix-channel updates for the legacy randomness
+  // mode; the former only refreshes the V2V-Urban LOS/NLOS condition cache.
+  uint16_t channelConditionUpdateMs = 0;
+  bool urbanConditionPilotAudit = false;
   uint8_t mcs = 14;
 
   /*
@@ -389,6 +399,9 @@ main (int argc, char *argv[])
   cmd.AddValue ("outputDir",
                 "Directory where the official 5G-LENA SQLite DB will be stored",
                 outputDir);
+  cmd.AddValue ("v2v-channel-model",
+                "V2V channel model: V2V-Highway (default) or V2V-Urban",
+                v2v_channel_model);
   cmd.AddValue ("baseline", "Baseline for PRR calculation", m_baseline_prr);
   cmd.AddValue ("met-sup","Use the Metric supervisor or not",m_metric_sup);
   cmd.AddValue ("rx-drop-prob-cam", "Application-level probability to drop received CAM packets", rx_drop_prob_cam);
@@ -510,6 +523,7 @@ main (int argc, char *argv[])
                 v2x_awareness_junction_enable);
   cmd.AddValue ("penetrationRate", "Rate of vehicles equipped with wireless communication devices", penetrationRate);
   cmd.AddValue ("send-cam", "Turn on or off CAM dissemination for this scenario", send_cam);
+  cmd.AddValue ("send-cpm", "Turn on or off CPM dissemination for this scenario", send_cpm);
   cmd.AddValue ("sionna", "Enable SIONNA usage", sionna);
   cmd.AddValue ("sionna-server-ip", "SIONNA server IP address", server_ip);
   cmd.AddValue ("sionna-local-machine", "SIONNA will be executed on local machine", local_machine);
@@ -611,6 +625,13 @@ main (int argc, char *argv[])
   cmd.AddValue ("channelUpdatePeriod",
                 "The channel update period in ms",
                 channelUpdatePeriod);
+  cmd.AddValue ("channel-condition-update-ms",
+                "V2V-Urban channel-condition refresh period in ms; leaves shadowing and "
+                "ThreeGppChannelModel updates unchanged",
+                channelConditionUpdateMs);
+  cmd.AddValue ("urban-condition-pilot-audit",
+                "Excluded-pilot audit of the actual V2V-Urban BWP condition model",
+                urbanConditionPilotAudit);
   cmd.AddValue ("mcs",
                 "The MCS to used for sidelink",
                 mcs);
@@ -618,6 +639,28 @@ main (int argc, char *argv[])
 
   // Parse the command line
   cmd.Parse (argc, argv);
+
+  BandwidthPartInfo::Scenario v2vChannelScenario;
+  bool registerUrbanBuildings = false;
+  if (v2v_channel_model == "V2V-Highway")
+    {
+      v2vChannelScenario = BandwidthPartInfo::V2V_Highway;
+    }
+  else if (v2v_channel_model == "V2V-Urban")
+    {
+      v2vChannelScenario = BandwidthPartInfo::V2V_Urban;
+      registerUrbanBuildings = true;
+    }
+  else
+    {
+      NS_FATAL_ERROR ("Unsupported v2v-channel-model '" << v2v_channel_model
+                      << "'. Valid values are V2V-Highway and V2V-Urban");
+    }
+  if ((channelConditionUpdateMs > 0 || urbanConditionPilotAudit) && !registerUrbanBuildings)
+    {
+      NS_FATAL_ERROR ("channel-condition-update-ms and urban-condition-pilot-audit require "
+                      "--v2v-channel-model=V2V-Urban");
+    }
 
   const std::unordered_map<std::string, double> perVehicleEquivalentDbm =
     ParsePerVehicleEquivalentDbm (per_vehicle_prr_profile);
@@ -690,6 +733,60 @@ main (int argc, char *argv[])
   MobilityHelper mobility;
   mobility.Install (allSlUesContainer);
 
+  if (registerUrbanBuildings)
+    {
+      // These bounds are copied exactly from
+      // experiments/future_transport_2026/scene.manifest.json.  They are the
+      // two PLY building footprints used by the paired Sionna RT scenario,
+      // expressed in the same SUMO-local XY coordinate system.
+      Ptr<Building> northBlock = CreateObject<Building> ();
+      northBlock->SetBoundaries (Box (-128.0, -90.0, 8.0, 35.0, 0.0, 14.0));
+      northBlock->SetBuildingType (Building::Office);
+      northBlock->SetExtWallsType (Building::ConcreteWithWindows);
+      northBlock->SetNFloors (1);
+
+      Ptr<Building> southBlock = CreateObject<Building> ();
+      southBlock->SetBoundaries (Box (-128.0, -90.0, -35.0, -8.0, 0.0, 11.0));
+      southBlock->SetBuildingType (Building::Office);
+      southBlock->SetExtWallsType (Building::ConcreteWithWindows);
+      southBlock->SetNFloors (1);
+
+      BuildingsHelper::Install (allSlUesContainer);
+
+      // Keep this probe independent of traffic dynamics.  Its two outdoor
+      // links respectively avoid and traverse the north-block footprint, so
+      // it detects a coordinate-system or registration error before a run is
+      // accepted as V2V-Urban.
+      NodeContainer geometryProbeNodes;
+      geometryProbeNodes.Create (4);
+      MobilityHelper geometryProbeMobility;
+      geometryProbeMobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+      geometryProbeMobility.Install (geometryProbeNodes);
+      geometryProbeNodes.Get (0)->GetObject<MobilityModel> ()->SetPosition (Vector (-150.0, 0.0, 1.5));
+      geometryProbeNodes.Get (1)->GetObject<MobilityModel> ()->SetPosition (Vector (-70.0, 0.0, 1.5));
+      geometryProbeNodes.Get (2)->GetObject<MobilityModel> ()->SetPosition (Vector (-150.0, 20.0, 1.5));
+      geometryProbeNodes.Get (3)->GetObject<MobilityModel> ()->SetPosition (Vector (-70.0, 20.0, 1.5));
+      BuildingsHelper::Install (geometryProbeNodes);
+      Ptr<BuildingsChannelConditionModel> geometryProbe =
+        CreateObject<BuildingsChannelConditionModel> ();
+      const bool clearPathLos = geometryProbe->GetChannelCondition (
+        geometryProbeNodes.Get (0)->GetObject<MobilityModel> (),
+        geometryProbeNodes.Get (1)->GetObject<MobilityModel> ())->IsLos ();
+      const bool blockedPathNlos = geometryProbe->GetChannelCondition (
+        geometryProbeNodes.Get (2)->GetObject<MobilityModel> (),
+        geometryProbeNodes.Get (3)->GetObject<MobilityModel> ())->IsNlos ();
+      NS_ABORT_MSG_UNLESS (clearPathLos && blockedPathNlos,
+                           "V2V-Urban building geometry probe failed");
+      std::cout << "NR-SIDELINK-CHANNEL,model=V2V-Urban,buildings_registered=2"
+                << ",bounds=-128:-90:8:35:14;-128:-90:-35:-8:11" << std::endl;
+      std::cout << "NR-SIDELINK-URBAN-GEOMETRY-PROBE,clear_path_los=" << clearPathLos
+                << ",building_path_nlos=" << blockedPathNlos << std::endl;
+    }
+  else
+    {
+      std::cout << "NR-SIDELINK-CHANNEL,model=V2V-Highway,buildings_registered=0" << std::endl;
+    }
+
   /*
    * Setup the NR module. We create the various helpers needed for the
    * NR simulation:
@@ -716,7 +813,12 @@ main (int argc, char *argv[])
   /* Create the configuration for the CcBwpHelper. SimpleOperationBandConf
    * creates a single BWP per CC
    */
-  CcBwpCreator::SimpleOperationBandConf bandConfSl (centralFrequencyBandSl, bandwidthBandSl, numCcPerBand, BandwidthPartInfo::V2V_Highway);
+  // CcBwpCreator expects hertz, whereas the sidelink BWP field below uses
+  // units of 100 kHz. Keep the two representations explicitly consistent.
+  const double channelBandwidthHz = static_cast<double> (bandwidthBandSl) * 100000.0;
+  CcBwpCreator::SimpleOperationBandConf bandConfSl (centralFrequencyBandSl, channelBandwidthHz, numCcPerBand, v2vChannelScenario);
+  std::cout << "NR-SIDELINK-BANDWIDTH,bandwidthBandSl_100kHz=" << bandwidthBandSl
+            << ",operation_band_hz=" << channelBandwidthHz << std::endl;
   //CcBwpCreator::SimpleOperationBandConf bandConfSl (centralFrequencyBandSl, bandwidthBandSl, numCcPerBand, BandwidthPartInfo::CV2X_UrbanMicrocell);
 
   // By using the configuration created, it is time to make the operation bands
@@ -740,6 +842,13 @@ main (int argc, char *argv[])
       nrHelper->SetChannelConditionModelAttribute ("UpdatePeriod", TimeValue (MilliSeconds (0)));
       nrHelper->SetPathlossAttribute ("ShadowingEnabled", BooleanValue (false));
     }
+  if (channelConditionUpdateMs > 0)
+    {
+      // Do not change ThreeGppChannelModel::UpdatePeriod or ShadowingEnabled
+      // here.  This opt-in urban study isolates dynamic LOS/NLOS conditions.
+      nrHelper->SetChannelConditionModelAttribute ("UpdatePeriod",
+                                                    TimeValue (MilliSeconds (channelConditionUpdateMs)));
+    }
 
   /*
    * Initialize channel and pathloss, plus other things inside bandSl. If needed,
@@ -749,6 +858,65 @@ main (int argc, char *argv[])
    */
   nrHelper->InitializeOperationBand (&bandSl);
   allBwps = CcBwpCreator::GetAllBwps ({bandSl});
+  if (registerUrbanBuildings)
+    {
+      Ptr<ThreeGppPropagationLossModel> actualPropagation =
+        DynamicCast<ThreeGppPropagationLossModel> (allBwps.at (0).get ()->m_propagation);
+      Ptr<ThreeGppSpectrumPropagationLossModel> actualSpectrum =
+        DynamicCast<ThreeGppSpectrumPropagationLossModel> (allBwps.at (0).get ()->m_3gppChannel);
+      NS_ABORT_MSG_IF (actualPropagation == nullptr || actualSpectrum == nullptr,
+                       "V2V-Urban BWP channel objects are absent");
+      Ptr<ChannelConditionModel> actualCondition = actualPropagation->GetChannelConditionModel ();
+      Ptr<ThreeGppChannelModel> actualChannel =
+        DynamicCast<ThreeGppChannelModel> (actualSpectrum->GetChannelModel ());
+      NS_ABORT_MSG_IF (actualCondition == nullptr || actualChannel == nullptr,
+                       "V2V-Urban BWP model audit could not resolve actual channel objects");
+      TimeValue actualConditionUpdate;
+      TimeValue actualChannelUpdate;
+      BooleanValue actualShadowing;
+      actualCondition->GetAttribute ("UpdatePeriod", actualConditionUpdate);
+      actualChannel->GetAttribute ("UpdatePeriod", actualChannelUpdate);
+      actualPropagation->GetAttribute ("ShadowingEnabled", actualShadowing);
+      const uint64_t conditionMs = actualConditionUpdate.Get ().GetMilliSeconds ();
+      const uint64_t channelMs = actualChannelUpdate.Get ().GetMilliSeconds ();
+      std::cout << "NR-SIDELINK-ACTUAL-CHANNEL,condition_model="
+                << actualCondition->GetInstanceTypeId ().GetName ()
+                << ",condition_update_ms=" << conditionMs
+                << ",three_gpp_channel_update_ms=" << channelMs
+                << ",shadowing_enabled=" << actualShadowing.Get () << std::endl;
+      NS_ABORT_MSG_IF (conditionMs != channelConditionUpdateMs,
+                       "V2V-Urban condition update period differs from command-line request");
+      if (channelConditionUpdateMs > 0)
+        {
+          NS_ABORT_MSG_IF (actualShadowing.Get () || channelMs != 0,
+                           "Dynamic V2V-Urban condition update changed shadowing or ThreeGppChannelModel updates");
+        }
+      if (urbanConditionPilotAudit)
+        {
+          NodeContainer dynamicProbeNodes;
+          dynamicProbeNodes.Create (2);
+          MobilityHelper dynamicProbeMobility;
+          dynamicProbeMobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+          dynamicProbeMobility.Install (dynamicProbeNodes);
+          BuildingsHelper::Install (dynamicProbeNodes);
+          Ptr<MobilityModel> firstProbe = dynamicProbeNodes.Get (0)->GetObject<MobilityModel> ();
+          Ptr<MobilityModel> secondProbe = dynamicProbeNodes.Get (1)->GetObject<MobilityModel> ();
+          firstProbe->SetPosition (Vector (-150.0, 0.0, 1.5));
+          secondProbe->SetPosition (Vector (-70.0, 0.0, 1.5));
+          const bool initialLos = actualCondition->GetChannelCondition (firstProbe, secondProbe)->IsLos ();
+          Simulator::Schedule (MilliSeconds (120), [actualCondition, firstProbe, secondProbe, initialLos] {
+            // The moved segment crosses the north-block footprint recorded in
+            // the paired RT scene.  This audit is only enabled for an excluded pilot.
+            firstProbe->SetPosition (Vector (-150.0, 20.0, 1.5));
+            secondProbe->SetPosition (Vector (-70.0, 20.0, 1.5));
+            const bool movedNlos = actualCondition->GetChannelCondition (firstProbe, secondProbe)->IsNlos ();
+            NS_ABORT_MSG_UNLESS (initialLos && movedNlos,
+                                 "V2V-Urban dynamic condition pilot audit did not transition LOS to NLOS");
+            std::cout << "NR-SIDELINK-URBAN-DYNAMIC-PILOT-AUDIT,initial_los=" << initialLos
+                      << ",moved_nlos=" << movedNlos << ",sample_time_ms=120" << std::endl;
+          });
+        }
+    }
 
 
   /*
@@ -948,6 +1116,16 @@ main (int argc, char *argv[])
 
   //Communicate the above pre-configuration to the NrSlHelper
   nrSlHelper->InstallNrSlPreConfiguration (allSlUesNetDeviceContainer, slPreConfigNr);
+  Ptr<NrUeNetDevice> bandwidthAuditDevice = DynamicCast<NrUeNetDevice> (allSlUesNetDeviceContainer.Get (0));
+  Ptr<NrUePhy> bandwidthAuditPhy = bandwidthAuditDevice->GetPhy (0);
+  if (std::abs (bandSl.m_channelBandwidth - channelBandwidthHz) > 0.5 ||
+      std::abs (static_cast<double> (bandwidthAuditPhy->GetChannelBandwidth ()) - channelBandwidthHz) > 0.5 ||
+      (bandwidthBandSl == 400 && numerologyBwpSl == 2 && bandwidthAuditPhy->GetRbNum () != 53))
+    {
+      NS_FATAL_ERROR ("Inconsistent NR sidelink operation band, PHY bandwidth, or resource blocks");
+    }
+  std::cout << "NR-SIDELINK-PHY,channel_bandwidth_hz=" << bandwidthAuditPhy->GetChannelBandwidth ()
+            << ",resource_blocks=" << bandwidthAuditPhy->GetRbNum () << std::endl;
 
   /****************************** End SL Configuration ***********************/
 
@@ -1137,6 +1315,7 @@ main (int argc, char *argv[])
   EmergencyVehicleAlertHelper.SetAttribute ("Model", StringValue ("nrv2x"));
   EmergencyVehicleAlertHelper.SetAttribute ("MetricSupervisor", PointerValue (metSup));
   EmergencyVehicleAlertHelper.SetAttribute ("SendCAM", BooleanValue (send_cam));
+  EmergencyVehicleAlertHelper.SetAttribute ("SendCPM", BooleanValue (send_cpm));
   EmergencyVehicleAlertHelper.SetAttribute ("RxDropProbCam", DoubleValue (rx_drop_prob_cam));
   EmergencyVehicleAlertHelper.SetAttribute ("RxDropProbCpm", DoubleValue (rx_drop_prob_cpm));
   EmergencyVehicleAlertHelper.SetAttribute ("RxDropProbPhyCam", DoubleValue (rx_drop_prob_phy_cam));
@@ -1531,6 +1710,10 @@ main (int argc, char *argv[])
   Simulator::Stop (Seconds(simTime));
 
   Simulator::Run ();
+
+  // End the TraCI session while the client is still alive.  SumoStop() is
+  // idempotent, so TraciClient's destructor will not send CMD_CLOSE again.
+  sumoClient->SumoStop ();
 
   if (enable_official_sqlite)
     {

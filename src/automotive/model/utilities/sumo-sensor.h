@@ -11,6 +11,7 @@
 #include <vector>
 #include <random>
 #include <shared_mutex>
+#include <fstream>
 #include <boost/geometry.hpp>
 
 namespace ns3 {
@@ -40,7 +41,14 @@ namespace ns3 {
      *
      * @param id The station ID.
      */
-    void setStationID(std::string id){m_id=id;m_stationID=std::stol(id.substr (3));}
+    void setStationID(std::string id){
+      m_id=id;m_stationID=std::stol(id.substr (3));
+      // Stable, disjoint streams: independent of object creation/event order.
+      const int64_t stream = 100000 + static_cast<int64_t>(m_stationID) * 8;
+      m_distanceNoise->SetStream(stream);
+      m_angleNoise->SetStream(stream + 1);
+      m_speedNoise->SetStream(stream + 2);
+    }
     /**
      * @brief Set the TraCI client.
      *
@@ -67,6 +75,14 @@ namespace ns3 {
      *
      */
     void updateDetectedObjects();
+
+    // Local sensor output is independent of CAM/CPM classification in the LDM.
+    const std::vector<vehicleData_t>& getLocalDetections() const { return m_localDetections; }
+    void setLogFile(const std::string& path) {
+      m_sensorLog.open(path, std::ofstream::trunc);
+      if (!m_sensorLog) { NS_FATAL_ERROR("Cannot open sensor log: " << path); }
+      m_sensorLog << "time_s,vehicle_id,object_id,x_m,y_m,speed_mps,heading_deg,range_m\n";
+    }
 
     /**
      * @brief Set the LDM object.
@@ -103,7 +119,11 @@ namespace ns3 {
         double m_avg_dwell = 0.0;
         int m_dwell_count = 0;
 
-        std::default_random_engine m_generator;
+        std::vector<vehicleData_t> m_localDetections;
+        std::ofstream m_sensorLog;
+        Ptr<NormalRandomVariable> m_distanceNoise;
+        Ptr<NormalRandomVariable> m_angleNoise;
+        Ptr<NormalRandomVariable> m_speedNoise;
   };
 }
 #endif // SUMOSENSOR_H

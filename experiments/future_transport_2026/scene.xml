@@ -1,0 +1,26 @@
+<scene version="2.1.0">
+  <integrator type="path"/>
+  <bsdf type="diffuse" id="mat-itu_concrete"><rgb name="reflectance" value="0.55 0.55 0.55"/></bsdf>
+  <bsdf type="diffuse" id="mat-itu_metal"><rgb name="reflectance" value="0.15 0.15 0.15"/></bsdf>
+  <bsdf type="diffuse" id="mat-itu_medium_dry_ground"><rgb name="reflectance" value="0.30 0.30 0.30"/></bsdf>
+  <shape type="ply" id="road_plane">
+    <string name="filename" value="meshes/road_plane.ply"/>
+    <ref id="mat-itu_medium_dry_ground" name="bsdf"/>
+  </shape>
+  <shape type="ply" id="north_block">
+    <string name="filename" value="meshes/north_block.ply"/>
+    <ref id="mat-itu_concrete" name="bsdf"/>
+  </shape>
+  <shape type="ply" id="south_block">
+    <string name="filename" value="meshes/south_block.ply"/>
+    <ref id="mat-itu_concrete" name="bsdf"/>
+  </shape>
+  <shape type="ply" id="car_2">
+    <string name="filename" value="meshes/car_2.ply"/>
+    <ref id="mat-itu_metal" name="bsdf"/>
+  </shape>
+  <shape type="ply" id="car_3">
+    <string name="filename" value="meshes/car_3.ply"/>
+    <ref id="mat-itu_metal" name="bsdf"/>
+  </shape>
+</scene>
